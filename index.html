@@ -1,123 +1,45 @@
-
 <!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Diseño Interactivo - Lista de Archivos</title>
-    <style>
-        /* 1. Estilos Generales (Cuerpo de la página) */
-        body {
-            /* Fuente similar a la de Apple para sistemas que la tengan */
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            background-color: #f2f2f7; /* Un gris muy claro, típico de fondos de iOS/macOS */
-            margin: 0;
-            padding: 2rem;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-        }
-
-        /* 2. El Contenedor Principal (Efecto "Tarjeta") */
-        .file-container {
-            background-color: #ffffff;
-            border-radius: 12px; /* Bordes redondeados suaves */
-            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.08); /* Sombra sutil para dar profundidad */
-            width: 100%;
-            max-width: 600px; /* Ancho máximo para que no se estire demasiado en pantallas grandes */
-            overflow: hidden; /* Asegura que el contenido respete los bordes redondeados */
-        }
-
-        /* 3. Título */
-        .file-container h1 {
-            font-size: 1.5rem;
-            font-weight: 600;
-            padding: 1.5rem 1.5rem 1rem 1.5rem;
-            margin: 0;
-            color: #1d1d1f;
-            border-bottom: 1px solid #e5e5ea;
-        }
-
-        /* 4. La Lista de Archivos */
-        #lista-html {
-            list-style: none; /* Quitamos los puntos de la lista */
-            padding: 0;
-            margin: 0;
-        }
-
-        /* 5. Cada Elemento de la Lista (li) */
-        #lista-html li {
-            border-bottom: 1px solid #e5e5ea; /* Línea divisoria sutil */
-        }
-
-        #lista-html li:last-child {
-            border-bottom: none; /* Quitamos la línea del último elemento */
-        }
-
-        /* 6. Los Enlaces (a) - La parte más importante */
-        #lista-html a {
-            display: flex; /* Permite alinear el texto y el ícono */
-            justify-content: space-between; /* Empuja el texto a la izq y el ícono a la der */
-            align-items: center;
-            padding: 1rem 1.5rem;
-            text-decoration: none;
-            color: #007aff; /* El azul clásico de Apple para enlaces */
-            font-weight: 500;
-            font-size: 1rem;
-            transition: background-color 0.2s ease-in-out; /* Transición suave para el hover */
-        }
-
-        /* 7. Efecto Hover (al pasar el mouse) */
-        #lista-html a:hover {
-            background-color: #f2f2f7; /* Un sutil cambio de color */
-        }
-
-        /* 8. El Ícono de Flecha (Chevron) */
-        #lista-html a::after {
-            content: '›'; /* Usamos un carácter de chevron */
-            color: #c7c7cc; /* Un gris claro para el ícono */
-            font-size: 1.5rem;
-            font-weight: bold;
-        }
-    </style>
+    <title>Índice Dinámico de Archivos (GitLab)</title>
 </head>
 <body>
-
-    <div class="file-container">
-        <h1>Diseño Interactivo</h1>
-        <ul id="lista-html">
-            </ul>
-    </div>
+    <h1>Mis Documentos HTML (generado desde GitLab)</h1>
+    <ul id="lista-html">
+        </ul>
 
     <script>
-        // Pega aquí tu script de JavaScript para GitLab o GitHub
-        // Ejemplo con GitLab:
-        const usuario = "alexillort";
-        const repo = "Interactive-Design";
+        // 1. Reemplaza con el ID de tu proyecto de GitLab
+        const projectId = "TU_ID_DE_PROYECTO"; 
+
+        // 2. URL de la API de GitLab para obtener el árbol de archivos del repositorio
+        // El parámetro `?recursive=true` busca en todas las carpetas
         const urlApi = `https://gitlab.com/api/v4/projects/${projectId}/repository/tree?recursive=true`;
 
         fetch(urlApi)
             .then(response => response.json())
             .then(data => {
                 const lista = document.getElementById('lista-html');
-                if (data.length === 0) {
-                    lista.innerHTML = "<li><a href='#'>No se encontraron archivos HTML.</a></li>";
-                }
+                
+                // 3. Filtramos para mostrar solo archivos .html
                 data.forEach(item => {
+                    // Verificamos que sea un archivo (type: 'blob') y que termine en .html
                     if (item.type === 'blob' && item.path.endsWith('.html') && item.name !== 'index.html') {
                         const listItem = document.createElement('li');
                         const link = document.createElement('a');
-                        link.href = item.path;
+                        
+                        // item.path ya contiene la ruta completa dentro del repo
+                        link.href = item.path; 
                         link.textContent = item.path;
-                        link.target = "_blank"; // Opcional: abre en una nueva pestaña
+                        
                         listItem.appendChild(link);
                         lista.appendChild(listItem);
                     }
                 });
             })
-            .catch(error => console.error('Error al consultar la API:', error));
+            .catch(error => console.error('Error al consultar la API de GitLab:', error));
     </script>
-
 </body>
 </html>
