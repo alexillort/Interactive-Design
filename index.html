@@ -3,43 +3,140 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Índice Dinámico de Archivos (GitLab)</title>
+    <title>Diseño Interactivo - Lista de Archivos</title>
+    <style>
+        /* Estilos Generales (Cuerpo de la página) */
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f2f2f7;
+            margin: 0;
+            padding: 2rem;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start; 
+            min-height: 100vh;
+            box-sizing: border-box;
+        }
+        /* El Contenedor Principal (Efecto "Tarjeta") */
+        .file-container {
+            background-color: #ffffff;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.08);
+            width: 100%;
+            max-width: 600px;
+            overflow: hidden;
+        }
+        /* Título */
+        .file-container h1 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            padding: 1.5rem 1.5rem 1rem 1.5rem;
+            margin: 0;
+            color: #1d1d1f;
+            border-bottom: 1px solid #e5e5ea;
+        }
+        /* La Lista de Archivos */
+        #lista-html {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        /* Cada Elemento de la Lista (li) */
+        #lista-html li {
+            border-bottom: 1px solid #e5e5ea;
+        }
+        #lista-html li:last-child {
+            border-bottom: none;
+        }
+        /* Los Enlaces (a) */
+        #lista-html a {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem 1.5rem;
+            text-decoration: none;
+            color: #007aff;
+            font-weight: 500;
+            font-size: 1rem;
+            transition: background-color 0.2s ease-in-out;
+        }
+        /* Efecto Hover */
+        #lista-html a:hover {
+            background-color: #f2f2f7;
+        }
+        /* El Ícono de Flecha (Chevron) */
+        #lista-html a::after {
+            content: '›';
+            color: #c7c7cc;
+            font-size: 1.5rem;
+            font-weight: bold;
+        }
+    </style>
 </head>
 <body>
-    <h1>Mis Documentos HTML (generado desde GitLab)</h1>
-    <ul id="lista-html">
-        </ul>
+
+    <div class="file-container">
+        <h1>Diseño Interactivo</h1>
+        <ul id="lista-html">
+            </ul>
+    </div>
 
     <script>
-        // 1. Reemplaza con el ID de tu proyecto de GitLab
-        const projectId = "TU_ID_DE_PROYECTO"; 
+        // --- CONFIGURACIÓN ---
+        const usuario = "alexillort";
+        const repo = "Interactive-Design";
+        const lista = document.getElementById('lista-html');
 
-        // 2. URL de la API de GitLab para obtener el árbol de archivos del repositorio
-        // El parámetro `?recursive=true` busca en todas las carpetas
-        const urlApi = `https://gitlab.com/api/v4/projects/${projectId}/repository/tree?recursive=true`;
+        /**
+         * Función que añade un nuevo enlace a la lista en el HTML.
+         */
+        function agregarEnlace(item) {
+            // Excluimos el propio archivo index.html de la lista
+            if (item.name === 'index.html') return;
 
-        fetch(urlApi)
-            .then(response => response.json())
-            .then(data => {
-                const lista = document.getElementById('lista-html');
-                
-                // 3. Filtramos para mostrar solo archivos .html
-                data.forEach(item => {
-                    // Verificamos que sea un archivo (type: 'blob') y que termine en .html
-                    if (item.type === 'blob' && item.path.endsWith('.html') && item.name !== 'index.html') {
-                        const listItem = document.createElement('li');
-                        const link = document.createElement('a');
-                        
-                        // item.path ya contiene la ruta completa dentro del repo
-                        link.href = item.path; 
-                        link.textContent = item.path;
-                        
-                        listItem.appendChild(link);
-                        lista.appendChild(listItem);
+            const listItem = document.createElement('li');
+            const link = document.createElement('a');
+            
+            // Usamos item.html_url para el enlace directo al archivo en GitHub Pages
+            link.href = item.name; 
+            link.textContent = item.path; // Mostramos la ruta completa
+            link.target = "_blank";
+            
+            listItem.appendChild(link);
+            lista.appendChild(listItem);
+        }
+
+        /**
+         * Función RECURSIVA para buscar archivos en el repositorio.
+         * Si encuentra un directorio, se llama a sí misma para buscar dentro de él.
+         */
+        async function buscarArchivos(path = '') {
+            const urlApi = `https://api.github.com/repos/${usuario}/${repo}/contents/${path}`;
+            
+            try {
+                const response = await fetch(urlApi);
+                if (!response.ok) {
+                    throw new Error(`Error de red: ${response.statusText}`);
+                }
+                const data = await response.json();
+
+                for (const item of data) {
+                    if (item.type === 'file' && item.name.endsWith('.html')) {
+                        agregarEnlace(item);
+                    } else if (item.type === 'dir') {
+                        // Si es un directorio, volvemos a buscar dentro de él. ¡Esto es la recursividad!
+                        await buscarArchivos(item.path);
                     }
-                });
-            })
-            .catch(error => console.error('Error al consultar la API de GitLab:', error));
+                }
+            } catch (error) {
+                console.error('Error al consultar la API de GitHub:', error);
+                lista.innerHTML = `<li><a href="#" style="color: #d93025;">Error al cargar archivos. Revisa la consola para más detalles.</a></li>`;
+            }
+        }
+
+        // Inicia la búsqueda de archivos desde la raíz del repositorio
+        buscarArchivos();
     </script>
+
 </body>
 </html>
