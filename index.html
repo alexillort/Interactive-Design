@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Índice Dinámico de Archivos</title>
+</head>
+<body>
+    <h1>Mis Documentos HTML (generado automáticamente)</h1>
+    <ul id="lista-html">
+        </ul>
+
+    <script>
+        // Reemplaza con tu usuario y nombre de repositorio
+        const usuario = "alexillort";
+        const repo = "Interactive-Design";
+
+        // URL de la API de GitHub para obtener el contenido del repositorio
+        const urlApi = `https://api.github.com/repos/${usuario}/${repo}/contents/`;
+
+        fetch(urlApi)
+            .then(response => response.json())
+            .then(data => {
+                const lista = document.getElementById('lista-html');
+                
+                // Filtramos para mostrar solo archivos .html
+                data.forEach(item => {
+                    if (item.name.endsWith('.html') && item.name !== 'index.html') {
+                        const listItem = document.createElement('li');
+                        const link = document.createElement('a');
+                        link.href = item.name;
+                        link.textContent = item.name;
+                        listItem.appendChild(link);
+                        lista.appendChild(listItem);
+                    }
+                });
+            })
+            .catch(error => console.error('Error al consultar la API de GitHub:', error));
+    </script>
+</body>
+</html>
