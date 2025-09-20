@@ -59,8 +59,8 @@
                         
                         // --- PARÁMETRO AJUSTADO ---
                         // Aumentamos la fuerza de 2 a 5 para un empuje más potente.
-                        this.x += forceDirectionX * force * 5;
-                        this.y += forceDirectionY * force * 5;
+                        this.x += forceDirectionX * force * 10;
+                        this.y += forceDirectionY * force * 10;
                     }
                 });
 
@@ -79,7 +79,7 @@
         }
 
         // Aumenté el número de partículas para que el efecto sea más denso y notorio.
-        function initParticles() { for (let i = 0; i < 5000; i++) { particlesArray.push(new Particle()); } }
+        function initParticles() { for (let i = 0; i < 2000; i++) { particlesArray.push(new Particle()); } }
         
         async function createHandLandmarker() {
             const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
@@ -131,3 +131,4 @@
 </body>
 
 </html>
+
