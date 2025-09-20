@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Grieta Cósmica Interactiva</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+        }
+        #main-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            transform: scaleX(-1); /* Efecto espejo */
+        }
+        #input_video { display: none; }
+    </style>
+</head>
+<body>
+    <video id="input_video" autoplay playsinline></video>
+    <canvas id="main-canvas"></canvas>
+
+    <script type="module">
+        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+        const video = document.getElementById("input_video");
+        const canvas = document.getElementById("main-canvas");
+        const ctx = canvas.getContext("2d");
+
+        let handLandmarker;
+        let particles = [];
+        
+        // --- CONFIGURACIÓN DEL EFECTO ---
+        const RIFT_ACTIVATION_DISTANCE = 0.15; // Distancia (normalizada) para activar la grieta
+        const RIFT_MAX_DISTANCE = 0.6;        // Distancia para la máxima intensidad
+        const PARTICLE_LIFESPAN = 80;         // Cuántos frames vive una partícula
+        const RIFT_JITTER = 25;               // Inestabilidad de la grieta (en píxeles)
+
+        class CosmicParticle {
+            constructor(x, y, vx, vy) {
+                this.x = x;
+                this.y = y;
+                this.vx = vx;
+                this.vy = vy;
+                this.life = PARTICLE_LIFESPAN;
+                this.size = Math.random() * 3 + 1;
+                this.color = `hsl(${200 + Math.random() * 100}, 100%, ${70 + Math.random() * 30}%)`;
+            }
+
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                this.life--;
+            }
+
+            draw() {
+                ctx.globalAlpha = this.life / PARTICLE_LIFESPAN;
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        async function createHandLandmarker() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
+                runningMode: "VIDEO",
+                numHands: 2
+            });
+            startCamera();
+        }
+        createHandLandmarker();
+
+        function startCamera() {
+            navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", () => {
+                    canvas.width = window.innerWidth;
+                    canvas.height = window.innerHeight;
+                    animate();
+                });
+            }).catch(err => console.error("ERROR:", err));
+        }
+
+        function animate() {
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.globalAlpha = 1;
+            // Dibuja el video ajustado al tamaño del canvas
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            const results = handLandmarker?.detectForVideo(video, performance.now());
+
+            // Solo activar el efecto si se detectan AMBAS manos
+            if (results?.landmarks && results.landmarks.length === 2) {
+                const [hand1, hand2] = results.landmarks;
+                const hand1Center = { x: hand1[9].x, y: hand1[9].y }; // Usamos la base del dedo medio
+                const hand2Center = { x: hand2[9].x, y: hand2[9].y };
+
+                const distance = Math.hypot(hand1Center.x - hand2Center.x, hand1Center.y - hand2Center.y);
+
+                if (distance > RIFT_ACTIVATION_DISTANCE) {
+                    // La intensidad aumenta con la distancia
+                    const intensity = Math.min(1, (distance - RIFT_ACTIVATION_DISTANCE) / (RIFT_MAX_DISTANCE - RIFT_ACTIVATION_DISTANCE));
+                    drawRift(hand1Center, hand2Center, intensity);
+                    emitParticles(hand1Center, hand2Center, intensity);
+                }
+            }
+
+            handleParticles();
+            requestAnimationFrame(animate);
+        }
+
+        function drawRift(p1, p2, intensity) {
+            ctx.globalCompositeOperation = 'lighter'; // Efecto luminoso
+            const p1_px = { x: p1.x * canvas.width, y: p1.y * canvas.height };
+            const p2_px = { x: p2.x * canvas.width, y: p2.y * canvas.height };
+
+            for (let i = 0; i < 5; i++) { // Dibuja varias líneas para un efecto más denso
+                const gradient = ctx.createLinearGradient(p1_px.x, p1_px.y, p2_px.x, p2_px.y);
+                gradient.addColorStop(0, 'rgba(255, 255, 255, 0)');
+                gradient.addColorStop(0.5, `rgba(100, 200, 255, ${intensity * 0.8})`);
+                gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+
+                ctx.strokeStyle = gradient;
+                ctx.lineWidth = Math.random() * 3 + 1;
+                ctx.shadowColor = '#00ffff';
+                ctx.shadowBlur = 20 * intensity;
+
+                ctx.beginPath();
+                ctx.moveTo(p1_px.x, p1_px.y);
+                // Añade puntos intermedios con "jitter" para el efecto de inestabilidad
+                const midX = (p1_px.x + p2_px.x) / 2 + (Math.random() - 0.5) * RIFT_JITTER * intensity;
+                const midY = (p1_px.y + p2_px.y) / 2 + (Math.random() - 0.5) * RIFT_JITTER * intensity;
+                ctx.quadraticCurveTo(midX, midY, p2_px.x, p2_px.y);
+                ctx.stroke();
+            }
+             ctx.shadowBlur = 0; // Reset shadow
+        }
+
+        function emitParticles(p1, p2, intensity) {
+            const emissionCount = Math.floor(intensity * 10); // Más intensidad = más partículas
+            const dx = p2.x - p1.x;
+            const dy = p2.y - p1.y;
+
+            for (let i = 0; i < emissionCount; i++) {
+                const spawnT = Math.random();
+                const spawnX = (p1.x + dx * spawnT) * canvas.width;
+                const spawnY = (p1.y + dy * spawnT) * canvas.height;
+                
+                // Vector perpendicular para la velocidad de escape
+                const speed = (Math.random() - 0.5) * 8 * intensity;
+                const vx = -dy * speed;
+                const vy = dx * speed;
+                
+                particles.push(new CosmicParticle(spawnX, spawnY, vx, vy));
+            }
+        }
+
+        function handleParticles() {
+            ctx.globalCompositeOperation = 'lighter';
+            for (let i = particles.length - 1; i >= 0; i--) {
+                particles[i].update();
+                if (particles[i].life <= 0) {
+                    particles.splice(i, 1);
+                } else {
+                    particles[i].draw();
+                }
+            }
+        }
+
+    </script>
+</body>
+</html>

@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Captura de Foto con Gestos de Manos</title>
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background-color: #222; 
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        #main-canvas { 
+            border-radius: 10px;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+            transform: scaleX(-1); /* Efecto espejo */
+        }
+        #screenshot-canvas {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            border: 3px solid #00ff99;
+            border-radius: 5px;
+            box-shadow: 0 0 15px rgba(0, 255, 153, 0.7);
+            width: 200px; /* Ancho fijo para la miniatura */
+            height: 112.5px; /* Alto calculado para mantener la relación de aspecto 16:9 */
+            transform: scaleX(-1); /* Corregir el doble espejo */
+            z-index: 10;
+        }
+        #input_video { display: none; } 
+    </style>
+</head>
+<body>
+    <video id="input_video" autoplay playsinline></video>
+    <canvas id="main-canvas"></canvas>
+    <canvas id="screenshot-canvas"></canvas>
+
+    <script type="module">
+        import { HandLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+        const video = document.getElementById("input_video");
+        const mainCanvas = document.getElementById("main-canvas");
+        const mainCtx = mainCanvas.getContext("2d");
+        const screenshotCanvas = document.getElementById("screenshot-canvas");
+        const screenshotCtx = screenshotCanvas.getContext("2d");
+        
+        let handLandmarker;
+        let drawingUtils;
+
+        // --- CONFIGURACIÓN ---
+        const UMBRAL_CAPTURA = 0.05; // Umbral de distancia para considerar que los dedos se tocan (ajustable)
+        let cooldown = 0; // Enfriamiento para no tomar fotos constantemente
+
+        async function createHandLandmarker() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, { 
+                baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
+                runningMode: "VIDEO", 
+                numHands: 2 
+            });
+            startCamera();
+        }
+        createHandLandmarker();
+
+        function startCamera() {
+            navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", () => {
+                    mainCanvas.width = video.videoWidth;
+                    mainCanvas.height = video.videoHeight;
+                    screenshotCanvas.width = video.videoWidth; // Misma resolución interna
+                    screenshotCanvas.height = video.videoHeight;
+
+                    const scaleFactor = Math.min(window.innerWidth / video.videoWidth, window.innerHeight / video.videoHeight) * 0.9;
+                    const newWidth = video.videoWidth * scaleFactor;
+                    const newHeight = video.videoHeight * scaleFactor;
+                    
+                    mainCanvas.style.width = `${newWidth}px`;
+                    mainCanvas.style.height = `${newHeight}px`;
+                    
+                    drawingUtils = new DrawingUtils(mainCtx);
+                    animate();
+                });
+            }).catch(err => {
+                console.error("ERROR: No se pudo acceder a la cámara.", err);
+                alert("ERROR: No se pudo acceder a la cámara.");
+            });
+        }
+
+        function takeScreenshot() {
+            // Dibuja la imagen actual del canvas principal en el canvas de la esquina
+            screenshotCtx.drawImage(mainCanvas, 0, 0, screenshotCanvas.width, screenshotCanvas.height);
+            console.log("¡Foto capturada!");
+        }
+
+        function animate() {
+            mainCtx.drawImage(video, 0, 0, mainCanvas.width, mainCanvas.height);
+            
+            if (cooldown > 0) {
+                cooldown--; // Reduce el contador de enfriamiento
+            }
+
+            if (handLandmarker) {
+                const results = handLandmarker.detectForVideo(video, performance.now());
+                if (results.landmarks && results.landmarks.length === 2) { // Asegurarse de que hay dos manos
+                    
+                    const [handOne, handTwo] = results.landmarks;
+
+                    // Dibuja los landmarks para visualización
+                    drawingUtils.drawLandmarks(handOne, { color: '#00FF99', lineWidth: 2, radius: 3 });
+                    drawingUtils.drawLandmarks(handTwo, { color: '#FFD700', lineWidth: 2, radius: 3 });
+
+                    // Puntos de los dedos: 4 = pulgar, 8 = índice
+                    const thumbTip1 = handOne[4];
+                    const indexTip1 = handOne[8];
+                    const thumbTip2 = handTwo[4];
+                    const indexTip2 = handTwo[8];
+
+                    // Calcular la distancia euclidiana para cada mano
+                    const dist1 = Math.hypot(thumbTip1.x - indexTip1.x, thumbTip1.y - indexTip1.y);
+                    const dist2 = Math.hypot(thumbTip2.x - indexTip2.x, thumbTip2.y - indexTip2.y);
+
+                    // Si ambas manos hacen el gesto y no hay enfriamiento
+                    if (dist1 < UMBRAL_CAPTURA && dist2 < UMBRAL_CAPTURA && cooldown === 0) {
+                        takeScreenshot();
+                        cooldown = 100; // Establece un enfriamiento de 100 frames
+                    }
+                } else if (results.landmarks && results.landmarks.length > 0) {
+                     // Si solo hay una mano, igual la dibujamos
+                    for (const landmarks of results.landmarks) {
+                        drawingUtils.drawLandmarks(landmarks, { color: '#FFFFFF', lineWidth: 2, radius: 3 });
+                    }
+                }
+            }
+            requestAnimationFrame(animate);
+        }
+    </script>
+</body>
+</html>

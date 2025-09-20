@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Nebulosa de Manos 3D</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        #container { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; }
+        #input_video { display: none; }
+    </style>
+</head>
+<body>
+    <video id="input_video" autoplay playsinline></video>
+    <div id="container"></div>
+
+    <script async src="https://unpkg.com/es-module-shims@1.10.0/dist/es-module-shims.js"></script>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.164.1/build/three.module.js"
+        }
+    }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+        const FINGER_TIPS = [4, 8, 12, 16, 20];
+
+        let handLandmarker;
+        let scene, camera, renderer, videoTexture;
+        const handMeshes = [null, null]; // Para almacenar las mallas de las dos manos
+        let backgroundPlane; // Variable para el plano de fondo
+
+        const video = document.getElementById("input_video");
+        const container = document.getElementById("container");
+
+        async function setupMediapipe() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
+                    delegate: "GPU"
+                },
+                runningMode: "VIDEO",
+                numHands: 2
+            });
+            startCamera();
+        }
+
+        function startCamera() {
+            navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } }).then(stream => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", () => {
+                    // Esperamos a que el video tenga sus dimensiones
+                    video.width = video.videoWidth;
+                    video.height = video.videoHeight;
+                    setupThreeJS();
+                    animate();
+                });
+            }).catch(err => console.error("Error al acceder a la cámara:", err));
+        }
+
+        function setupThreeJS() {
+            scene = new THREE.Scene();
+            const aspect = window.innerWidth / window.innerHeight;
+            camera = new THREE.PerspectiveCamera(60, aspect, 0.1, 100);
+            camera.position.z = 1.5;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            container.appendChild(renderer.domElement);
+            
+            videoTexture = new THREE.VideoTexture(video);
+            videoTexture.minFilter = THREE.LinearFilter;
+            videoTexture.magFilter = THREE.LinearFilter;
+            
+            // --- CÓDIGO CLAVE PARA AJUSTAR EL PLANO DE FONDO ---
+            // Creamos un plano 3D que usará la textura del video
+            const backgroundPlaneGeo = new THREE.PlaneGeometry(1, 1); // Tamaños iniciales arbitrarios
+            const backgroundPlaneMat = new THREE.MeshBasicMaterial({ map: videoTexture });
+            backgroundPlane = new THREE.Mesh(backgroundPlaneGeo, backgroundPlaneMat);
+            backgroundPlane.position.z = -0.5; // Colocamos un poco hacia atrás
+            scene.add(backgroundPlane);
+
+            // Ajusta el tamaño del plano de fondo para que coincida con la vista de la cámara
+            adjustBackgroundPlaneSize();
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            const pointLight = new THREE.PointLight(0xffffff, 1);
+            pointLight.position.set(0, 0, 2);
+            scene.add(pointLight);
+
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function adjustBackgroundPlaneSize() {
+            if (!video.videoWidth || !video.videoHeight) return;
+
+            const videoAspect = video.videoWidth / video.videoHeight;
+            const cameraFovRad = camera.fov * Math.PI / 180;
+            const viewHeight = 2 * Math.tan(cameraFovRad / 2) * Math.abs(camera.position.z - backgroundPlane.position.z);
+            let viewWidth = viewHeight * camera.aspect;
+
+            let planeWidth, planeHeight;
+
+            // Decidir si el video es más ancho o más alto que la vista
+            // para cubrir completamente el viewport sin distorsionar
+            if (videoAspect > camera.aspect) {
+                // El video es más ancho que la vista, ajustamos la altura del plano
+                planeHeight = viewHeight;
+                planeWidth = viewHeight * videoAspect;
+            } else {
+                // El video es más alto que la vista, ajustamos el ancho del plano
+                planeWidth = viewWidth;
+                planeHeight = viewWidth / videoAspect;
+            }
+            
+            backgroundPlane.scale.set(planeWidth, planeHeight, 1);
+        }
+
+        function onWindowResize() {
+            const aspect = window.innerWidth / window.innerHeight;
+            camera.aspect = aspect;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            
+            adjustBackgroundPlaneSize(); // Reajusta el plano de fondo en redimensionamiento
+        }
+
+        function updateHandMesh(handIndex, landmarks) {
+            if (!landmarks || landmarks.length === 0) {
+                if(handMeshes[handIndex]) handMeshes[handIndex].visible = false;
+                return;
+            }
+
+            if (!handMeshes[handIndex]) {
+                const group = new THREE.Group();
+                scene.add(group);
+                handMeshes[handIndex] = group;
+            }
+            
+            handMeshes[handIndex].visible = true;
+
+            const currentAspect = window.innerWidth / window.innerHeight;
+            // Coordenadas del video normalizadas (0 a 1).
+            // Convertimos a coordenadas del espacio 3D de Three.js.
+            // Para que se alineen con el plano de fondo, necesitamos escalar
+            // estas coordenadas al tamaño real del plano de fondo y centrarlas.
+            
+            const scaledVideoWidth = backgroundPlane.scale.x;
+            const scaledVideoHeight = backgroundPlane.scale.y;
+
+            FINGER_TIPS.forEach(tipIndex => {
+                const landmark = landmarks[tipIndex];
+
+                // Convertimos las coordenadas normalizadas (0-1) a coordenadas del plano de fondo
+                // y luego a coordenadas de la escena 3D.
+                const x = (landmark.x - 0.5) * scaledVideoWidth;
+                const y = -(landmark.y - 0.5) * scaledVideoHeight; // Y invertido para Three.js
+
+                // Ajustamos 'z' para que esté delante del plano de fondo
+                const z = -landmark.z * 2.5 + 0.1; // Ajusta este valor si los puntos parecen demasiado lejos o cerca
+
+                const trailGeometry = new THREE.SphereGeometry(0.03, 16, 16);
+                const hue = (performance.now() / 2000 + landmark.z) % 1;
+                const color = new THREE.Color().setHSL(hue, 1, 0.6);
+                const trailMaterial = new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: 0.8 });
+                
+                const trailSphere = new THREE.Mesh(trailGeometry, trailMaterial);
+                trailSphere.position.set(x, y, z);
+                
+                trailSphere.life = 1.0; 
+                trailSphere.scaleStart = new THREE.Vector3(1, 1, 1);
+                handMeshes[handIndex].add(trailSphere);
+            });
+        }
+
+        function animateTrails() {
+            handMeshes.forEach(group => {
+                if (!group) return;
+                
+                const childrenToRemove = [];
+                group.children.forEach(child => {
+                    if (child.isMesh) {
+                        child.life -= 0.015; 
+                        if (child.life <= 0) {
+                            childrenToRemove.push(child);
+                        } else {
+                            child.material.opacity = child.life;
+                            child.scale.lerp(new THREE.Vector3(0.01, 0.01, 0.01), 0.025);
+                        }
+                    }
+                });
+
+                childrenToRemove.forEach(child => group.remove(child));
+            });
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (handLandmarker && video.readyState >= 4) {
+                const results = handLandmarker.detectForVideo(video, performance.now());
+                results.landmarks.forEach((landmarks, i) => {
+                    updateHandMesh(i, landmarks);
+                });
+            }
+
+            animateTrails();
+            
+            // La magia del modo espejo
+            scene.scale.x = -1;
+
+            renderer.render(scene, camera);
+        }
+
+        setupMediapipe();
+    </script>
+</body>
+</html>

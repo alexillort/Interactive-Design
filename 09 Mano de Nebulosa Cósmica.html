@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Mano de Nebulosa Cósmica</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); }
+        #background-canvas { 
+            z-index: 1;
+            filter: brightness(0.4) saturate(0.5); 
+        }
+        #interaction-canvas { z-index: 2; }
+        #input_video { display: none; } 
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+</head>
+<body>
+    <video id="input_video" autoplay playsinline></video>
+    <canvas id="background-canvas"></canvas>
+    <canvas id="interaction-canvas"></canvas>
+
+    <script type="module">
+        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+        const HAND_CONNECTIONS = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [5, 9], [9, 10], [10, 11], [11, 12], [9, 13], [13, 14], [14, 15], [15, 16], [13, 17], [17, 18], [18, 19], [19, 20], [0, 17]];
+
+        const video = document.getElementById("input_video");
+        const bgCanvas = document.getElementById("background-canvas");
+        const bgCtx = bgCanvas.getContext("2d");
+        const intCanvas = document.getElementById("interaction-canvas");
+        const intCtx = intCanvas.getContext("2d");
+        
+        let handLandmarker;
+        let noise; // Variable para guardar la función de ruido
+
+        class EnergyParticle {
+            constructor(x, y, hue) {
+                this.x = x; this.y = y;
+                this.size = Math.random() * 3 + 1;
+                this.life = 1;
+                this.hue = hue;
+                this.speedX = (Math.random() - 0.5) * 0.5;
+                this.speedY = (Math.random() - 0.5) * 0.5;
+            }
+            update() { this.x += this.speedX; this.y += this.speedY; this.life -= 0.015; this.size *= 0.98; }
+            draw() {
+                intCtx.fillStyle = `hsla(${this.hue}, 100%, 70%, ${this.life})`;
+                intCtx.shadowBlur = 5;
+                intCtx.shadowColor = `hsla(${this.hue}, 100%, 70%, ${this.life})`;
+                intCtx.beginPath();
+                intCtx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                intCtx.fill();
+            }
+        }
+        let energyParticles = [];
+
+        async function createHandLandmarker() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, { 
+                baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
+                runningMode: "VIDEO", numHands: 2 
+            });
+            startCamera();
+        }
+        createHandLandmarker();
+
+        function startCamera() {
+            // Inicializa la función de ruido de p5 una vez que la librería está cargada
+            noise = new p5().noise;
+
+            navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", () => {
+                    [bgCanvas, intCanvas].forEach(c => { c.width = video.videoWidth; c.height = video.videoHeight; });
+                    const scaleFactor = Math.min(window.innerWidth / video.videoWidth, window.innerHeight / video.videoHeight);
+                    const newWidth = video.videoWidth * scaleFactor;
+                    const newHeight = video.videoHeight * scaleFactor;
+                    const newLeft = (window.innerWidth - newWidth) / 2;
+                    const newTop = (window.innerHeight - newHeight) / 2;
+                    [bgCanvas, intCanvas].forEach(c => { c.style.width = `${newWidth}px`; c.style.height = `${newHeight}px`; c.style.left = `${newLeft}px`; c.style.top = `${newTop}px`; });
+                    animate(0);
+                });
+            });
+        }
+        
+        let frameCount = 0;
+        function animate(time) {
+            frameCount++;
+            bgCtx.drawImage(video, 0, 0, bgCanvas.width, bgCanvas.height);
+            intCtx.globalCompositeOperation = 'source-over';
+            intCtx.fillStyle = 'rgba(0, 0, 10, 0.15)'; 
+            intCtx.fillRect(0, 0, intCanvas.width, intCanvas.height);
+            intCtx.shadowBlur = 0;
+            intCtx.globalAlpha = 1;
+
+            if (handLandmarker) {
+                const results = handLandmarker.detectForVideo(video, performance.now());
+                if (results.landmarks && results.landmarks.length > 0) {
+                    for (const landmarks of results.landmarks) {
+                        const thumbTip = landmarks[4];
+                        const indexTip = landmarks[8];
+                        const centerX = (thumbTip.x + indexTip.x) / 2 * intCanvas.width;
+                        const centerY = (thumbTip.y + indexTip.y) / 2 * intCanvas.height;
+                        const dxRadius = (thumbTip.x - indexTip.x) * intCanvas.width;
+                        const dyRadius = (thumbTip.y - indexTip.y) * intCanvas.height;
+                        let effectRadius = Math.sqrt(dxRadius * dxRadius + dyRadius * dyRadius) * 1.5;
+                        effectRadius = Math.max(80, Math.min(350, effectRadius));
+
+                        intCtx.save();
+                        intCtx.beginPath();
+                        intCtx.arc(centerX, centerY, effectRadius, 0, Math.PI * 2);
+                        intCtx.clip();
+
+                        intCtx.globalCompositeOperation = 'lighter';
+                        const baseHue = (time * 0.01) % 360;
+
+                        for (let i = 0; i < 3; i++) {
+                            const speed = 0.005 * (i + 1);
+                            const layerHue = (baseHue + i * 60) % 360;
+                            intCtx.fillStyle = `hsla(${layerHue}, 100%, 70%, ${0.15 - i * 0.03})`;
+                            intCtx.beginPath();
+                            for (let a = 0; a < Math.PI * 2; a += 0.1) {
+                                const r = effectRadius * (noise(Math.cos(a) + frameCount * speed, Math.sin(a) + frameCount * speed, time * 0.0001 + i));
+                                intCtx.lineTo(centerX + Math.cos(a) * r, centerY + Math.sin(a) * r);
+                            }
+                            intCtx.closePath();
+                            intCtx.fill();
+                        }
+                        intCtx.restore();
+
+                        intCtx.globalCompositeOperation = 'lighter';
+                        for (const point of landmarks) {
+                            if (Math.random() > 0.9) {
+                                const hueForParticle = (baseHue + Math.random() * 60) % 360;
+                                energyParticles.push(new EnergyParticle(point.x * intCanvas.width, point.y * intCanvas.height, hueForParticle));
+                            }
+                        }
+
+                        intCtx.strokeStyle = 'rgba(200, 220, 255, 0.4)';
+                        intCtx.lineWidth = 1;
+                        intCtx.shadowBlur = 10;
+                        intCtx.shadowColor = 'rgba(150, 200, 255, 0.8)';
+                        for (const connection of HAND_CONNECTIONS) {
+                            const startPoint = landmarks[connection[0]];
+                            const endPoint = landmarks[connection[1]];
+                            intCtx.beginPath();
+                            intCtx.moveTo(startPoint.x * intCanvas.width, startPoint.y * intCanvas.height);
+                            intCtx.lineTo(endPoint.x * intCanvas.width, endPoint.y * intCanvas.height);
+                            intCtx.stroke();
+                        }
+                        intCtx.globalCompositeOperation = 'source-over';
+                        intCtx.shadowBlur = 0;
+                    }
+                }
+            }
+            
+            for (let i = energyParticles.length - 1; i >= 0; i--) {
+                const particle = energyParticles[i];
+                particle.update();
+                if (particle.life <= 0 || particle.size <= 0.5) {
+                    energyParticles.splice(i, 1);
+                } else {
+                    particle.draw();
+                }
+            }
+
+            requestAnimationFrame(animate);
+        }
+    </script>
+</body>
+</html>

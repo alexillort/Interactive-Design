@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Hand Tracking - Estilo Neón</title>
+    <style>
+        /* Estilos para el fondo y el layout */
+        body { 
+            margin: 0;
+            height: 100vh;
+            background-color: #1a1a1a; /* Fondo gris oscuro */
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            gap: 20px; /* Espacio entre los dos cuadros */
+        }
+
+        /* Estilos para los cuadros de video y canvas */
+        video, canvas { 
+            border: 2px solid lime; /* Borde verde neón */
+            border-radius: 10px;   /* Esquinas redondeadas */
+            background-color: #000;    /* Fondo negro para los cuadros */
+        }
+
+        /* Invierte el canvas para que actúe como un espejo */
+        canvas { 
+            transform: scaleX(-1); 
+        }
+    </style>
+</head>
+<body>
+    <video id="input_video" width="640" height="360" autoplay playsinline></video>
+    <canvas id="output_canvas" width="640" height="360"></canvas>
+
+    <script type="module">
+        // Se importan las librerías desde la versión más reciente
+        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+        const video = document.getElementById("input_video");
+        const canvasElement = document.getElementById("output_canvas");
+        const canvasCtx = canvasElement.getContext("2d");
+
+        let handLandmarker;
+
+        // Función para inicializar el detector de manos
+        async function createHandLandmarker() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
+                    delegate: "GPU"
+                },
+                runningMode: "VIDEO",
+                numHands: 2
+            });
+            startCamera();
+        }
+        createHandLandmarker();
+
+        // Función para iniciar la cámara
+        function startCamera() {
+            navigator.mediaDevices.getUserMedia({ video: true })
+                .then((stream) => {
+                    video.srcObject = stream;
+                    video.addEventListener("loadeddata", predictWebcam);
+                })
+                .catch((err) => {
+                    console.error("ERROR al acceder a la cámara: ", err);
+                });
+        }
+
+        // Función para predecir y dibujar
+        function predictWebcam() {
+        canvasCtx.save();
+        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+        canvasCtx.drawImage(video, 0, 0, canvasElement.width, canvasElement.height);
+
+        if (handLandmarker) {
+            const results = handLandmarker.detectForVideo(video, performance.now());
+            if (results.landmarks) {
+                // Lista con los puntos de las yemas de los 5 dedos
+                const FINGER_TIPS = [4, 8, 12, 16, 20];
+                for (const landmarks of results.landmarks) {
+                    // Dibuja un punto en cada yema
+                    for (const tipIndex of FINGER_TIPS) {
+                        const fingerTip = landmarks[tipIndex];
+                        canvasCtx.beginPath();
+                        canvasCtx.arc(
+                            fingerTip.x * canvasElement.width, 
+                            fingerTip.y * canvasElement.height, 
+                            10, 0, 2 * Math.PI);
+                        canvasCtx.fillStyle = "lime";
+                        canvasCtx.fill();
+                    }
+                }
+            }
+        }
+        canvasCtx.restore();
+        window.requestAnimationFrame(predictWebcam);
+    }
+    </script>
+</body>
+</html>

@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Escultor de Galaxias</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); }
+        #background-canvas { z-index: 1; filter: brightness(0.3); }
+        #interaction-canvas { z-index: 2; }
+        #input_video { display: none; } 
+    </style>
+</head>
+<body>
+    <video id="input_video" autoplay playsinline></video>
+    <canvas id="background-canvas"></canvas>
+    <canvas id="interaction-canvas"></canvas>
+
+    <script type="module">
+        import { HandLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+        const HAND_CONNECTIONS = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [5, 9], [9, 10], [10, 11], [11, 12], [9, 13], [13, 14], [14, 15], [15, 16], [13, 17], [17, 18], [18, 19], [19, 20], [0, 17]];
+
+        const video = document.getElementById("input_video");
+        const bgCanvas = document.getElementById("background-canvas");
+        const bgCtx = bgCanvas.getContext("2d");
+        const intCanvas = document.getElementById("interaction-canvas");
+        const intCtx = intCanvas.getContext("2d");
+        const drawingUtils = new DrawingUtils(intCtx);
+        
+        let handLandmarker;
+        let stardust = [];
+        const NUM_STARDUST = 2000; // Más partículas para un efecto más denso
+
+        // --- CLASE PARA EL POLVO ESTELAR CON FÍSICA ---
+        class StardustParticle {
+            constructor() {
+                this.x = Math.random() * intCanvas.width;
+                this.y = Math.random() * intCanvas.height;
+                this.vx = 0; // Velocidad en X
+                this.vy = 0; // Velocidad en Y
+                this.size = Math.random() * 1.5;
+                this.color = `rgba(200, 220, 255, ${Math.random() * 0.5 + 0.3})`;
+            }
+
+            // Actualiza la posición basada en la gravedad de los atractores (manos)
+            update(attractors) {
+                let ax = 0; // Aceleración en X
+                let ay = 0; // Aceleración en Y
+
+                attractors.forEach(point => {
+                    const dx = point.x - this.x;
+                    const dy = point.y - this.y;
+                    const distSq = dx * dx + dy * dy;
+
+                    // Evita fuerzas infinitas si está demasiado cerca
+                    if (distSq > 1) {
+                        const force = 5 / distSq; // La fuerza de gravedad disminuye con la distancia
+                        ax += dx * force;
+                        ay += dy * force;
+                    }
+                });
+
+                // Aplica la aceleración a la velocidad
+                this.vx += ax;
+                this.vy += ay;
+
+                // Aplica fricción para que no se acelere infinitamente
+                this.vx *= 0.96;
+                this.vy *= 0.96;
+
+                // Mueve la partícula
+                this.x += this.vx;
+                this.y += this.vy;
+
+                // Lógica para reaparecer en los bordes si se escapa
+                if (this.x < 0 || this.x > intCanvas.width || this.y < 0 || this.y > intCanvas.height) {
+                    this.x = Math.random() * intCanvas.width;
+                    this.y = Math.random() * intCanvas.height;
+                    this.vx = 0;
+                    this.vy = 0;
+                }
+            }
+
+            draw() {
+                intCtx.fillStyle = this.color;
+                intCtx.beginPath();
+                intCtx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                intCtx.fill();
+            }
+        }
+
+        function initStardust() {
+            for (let i = 0; i < NUM_STARDUST; i++) {
+                stardust.push(new StardustParticle());
+            }
+        }
+
+        async function createHandLandmarker() { /* ...código sin cambios... */
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, { baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" }, runningMode: "VIDEO", numHands: 2 });
+            startCamera();
+        }
+        createHandLandmarker();
+
+        function startCamera() {
+            navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", () => {
+                    [bgCanvas, intCanvas].forEach(c => { c.width = video.videoWidth; c.height = video.videoHeight; });
+                    const scaleFactor = Math.min(window.innerWidth / video.videoWidth, window.innerHeight / video.videoHeight);
+                    [bgCanvas, intCanvas].forEach(c => { 
+                        c.style.width = `${video.videoWidth * scaleFactor}px`; 
+                        c.style.height = `${video.videoHeight * scaleFactor}px`;
+                        c.style.left = `${(window.innerWidth - (video.videoWidth * scaleFactor)) / 2}px`;
+                        c.style.top = `${(window.innerHeight - (video.videoHeight * scaleFactor)) / 2}px`;
+                    });
+                    initStardust();
+                    animate();
+                });
+            });
+        }
+
+        function animate() {
+            bgCtx.drawImage(video, 0, 0, bgCanvas.width, bgCanvas.height);
+            intCtx.fillStyle = 'rgba(0, 0, 0, 0.2)'; // Estelas sutiles para el movimiento
+            intCtx.fillRect(0, 0, intCanvas.width, intCanvas.height);
+
+            let attractors = [];
+            if (handLandmarker) {
+                const results = handLandmarker.detectForVideo(video, performance.now());
+                if (results.landmarks && results.landmarks.length > 0) {
+                    for (const landmarks of results.landmarks) {
+                        for (const point of landmarks) {
+                            attractors.push({ x: point.x * intCanvas.width, y: point.y * intCanvas.height });
+                        }
+                        
+                        // Dibuja un "núcleo" brillante en la palma
+                        const palmCenter = landmarks[9];
+                        intCtx.fillStyle = 'rgba(255, 220, 180, 0.8)';
+                        intCtx.shadowBlur = 20;
+                        intCtx.shadowColor = 'white';
+                        intCtx.beginPath();
+                        intCtx.arc(palmCenter.x * intCanvas.width, palmCenter.y * intCanvas.height, 10, 0, Math.PI * 2);
+                        intCtx.fill();
+                        intCtx.shadowBlur = 0;
+                    }
+                }
+            }
+            
+            // Actualiza y dibuja todo el polvo estelar
+            stardust.forEach(p => {
+                p.update(attractors);
+                p.draw();
+            });
+
+            requestAnimationFrame(animate);
+        }
+    </script>
+</body>
+</html>

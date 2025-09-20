@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Agua Mágica Interactiva</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); }
+        #background-canvas { z-index: 1; } /* El canvas principal ahora es el del fondo */
+        #interaction-canvas { z-index: 2; } /* El canvas de la mano es transparente */
+        #input_video { display: none; } 
+    </style>
+</head>
+<body>
+    <video id="input_video" autoplay playsinline></video>
+    <canvas id="background-canvas"></canvas>
+    <canvas id="interaction-canvas"></canvas>
+
+    <script type="module">
+        import { HandLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+        const HAND_CONNECTIONS = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [5, 9], [9, 10], [10, 11], [11, 12], [9, 13], [13, 14], [14, 15], [15, 16], [13, 17], [17, 18], [18, 19], [19, 20], [0, 17]];
+
+        const video = document.getElementById("input_video");
+        const bgCanvas = document.getElementById("background-canvas");
+        const bgCtx = bgCanvas.getContext("2d");
+        const intCanvas = document.getElementById("interaction-canvas");
+        const intCtx = intCanvas.getContext("2d");
+        const drawingUtils = new DrawingUtils(intCtx);
+        
+        let handLandmarker;
+        const FINGER_TIPS = [4, 8, 12, 16, 20];
+
+        // --- SIMULACIÓN DE AGUA ---
+        let cols, rows;
+        let current, previous; // Dos buffers para la simulación de ondas
+        let dampening = 0.98; // Factor de desvanecimiento de las ondas
+
+        function initWaterSimulation() {
+            // Usamos una resolución más baja para la simulación para un mejor rendimiento
+            cols = Math.floor(bgCanvas.width / 8);
+            rows = Math.floor(bgCanvas.height / 8);
+            current = new Array(cols * rows).fill(0);
+            previous = new Array(cols * rows).fill(0);
+        }
+
+        // Función que "toca" el agua para crear una onda
+        function disturbWater(x, y) {
+            // Convierte coordenadas del canvas a coordenadas de la simulación
+            let simX = Math.floor(x / bgCanvas.width * cols);
+            let simY = Math.floor(y / bgCanvas.height * rows);
+            // Añade energía al punto. El valor alto crea una onda grande.
+            previous[simX + simY * cols] = 1024; 
+        }
+
+        async function createHandLandmarker() { /* ...código sin cambios... */
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, { baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" }, runningMode: "VIDEO", numHands: 2 });
+            startCamera();
+        }
+        createHandLandmarker();
+
+        function startCamera() {
+            navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", () => {
+                    [bgCanvas, intCanvas].forEach(c => { c.width = video.videoWidth; c.height = video.videoHeight; });
+                    const scaleFactor = Math.min(window.innerWidth / video.videoWidth, window.innerHeight / video.videoHeight);
+                    const newWidth = video.videoWidth * scaleFactor;
+                    const newHeight = video.videoHeight * scaleFactor;
+                    const newLeft = (window.innerWidth - newWidth) / 2;
+                    const newTop = (window.innerHeight - newHeight) / 2;
+                    [bgCanvas, intCanvas].forEach(c => { c.style.width = `${newWidth}px`; c.style.height = `${newHeight}px`; c.style.left = `${newLeft}px`; c.style.top = `${newTop}px`; });
+                    initWaterSimulation();
+                    animate();
+                });
+            });
+        }
+
+        function animate() {
+            // Dibuja el video original en el canvas de fondo para poder leer sus píxeles
+            bgCtx.drawImage(video, 0, 0, bgCanvas.width, bgCanvas.height);
+            intCtx.clearRect(0, 0, intCanvas.width, intCanvas.height);
+
+            // --- LÓGICA DE LA SIMULACIÓN Y DISTORSIÓN ---
+            // 1. Propagación de las ondas
+            for (let i = 1; i < cols - 1; i++) {
+                for (let j = 1; j < rows - 1; j++) {
+                    current[i + j * cols] = (
+                        (previous[i - 1 + j * cols] +
+                         previous[i + 1 + j * cols] +
+                         previous[i + (j - 1) * cols] +
+                         previous[i + (j + 1) * cols]) / 2 - current[i + j * cols]
+                    ) * dampening;
+                }
+            }
+            let temp = previous;
+            previous = current;
+            current = temp;
+
+            // 2. Aplicación de la distorsión a la imagen
+            const originalData = bgCtx.getImageData(0, 0, bgCanvas.width, bgCanvas.height);
+            const distortedData = bgCtx.createImageData(bgCanvas.width, bgCanvas.height);
+            const data = originalData.data;
+            const dData = distortedData.data;
+
+            for (let i = 0; i < cols; i++) {
+                for (let j = 0; j < rows; j++) {
+                    const simX = i;
+                    const simY = j;
+                    const offsetX = Math.floor((current[(simX - 1) + simY * cols] - current[(simX + 1) + simY * cols]));
+                    const offsetY = Math.floor((current[simX + (simY - 1) * cols] - current[simX + (simY + 1) * cols]));
+
+                    for (let x = simX * 8; x < (simX + 1) * 8; x++) {
+                        for (let y = simY * 8; y < (simY + 1) * 8; y++) {
+                            const newX = x + offsetX;
+                            const newY = y + offsetY;
+                            const oldIndex = (x + y * bgCanvas.width) * 4;
+                            const newIndex = (newX + newY * bgCanvas.width) * 4;
+                            if (newX > 0 && newX < bgCanvas.width && newY > 0 && newY < bgCanvas.height) {
+                                dData[oldIndex] = data[newIndex];
+                                dData[oldIndex + 1] = data[newIndex + 1];
+                                dData[oldIndex + 2] = data[newIndex + 2];
+                                dData[oldIndex + 3] = 255;
+                            }
+                        }
+                    }
+                }
+            }
+            bgCtx.putImageData(distortedData, 0, 0);
+            
+            // --- LÓGICA DE DETECCIÓN DE MANOS ---
+            if (handLandmarker) {
+                const results = handLandmarker.detectForVideo(video, performance.now());
+                if (results.landmarks && results.landmarks.length > 0) {
+                    for (const landmarks of results.landmarks) {
+                        FINGER_TIPS.forEach(tipIndex => {
+                            const point = landmarks[tipIndex];
+                            disturbWater(point.x * bgCanvas.width, point.y * bgCanvas.height);
+                        });
+                        drawingUtils.drawConnectors(landmarks, HAND_CONNECTIONS, { color: 'rgba(255, 255, 255, 0.5)', lineWidth: 1 });
+                        drawingUtils.drawLandmarks(landmarks, { color: 'rgba(0, 255, 0, 0.7)', lineWidth: 1, radius: 2 });
+                    }
+                }
+            }
+            requestAnimationFrame(animate);
+        }
+    </script>
+</body>
+</html>

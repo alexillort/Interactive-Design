@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Estelas de Luz con Manos</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); }
+        #background-canvas { z-index: 1; }
+        #interaction-canvas { z-index: 2; }
+        #input_video { display: none; } 
+    </style>
+</head>
+<body>
+    <video id="input_video" autoplay playsinline></video>
+    <canvas id="background-canvas"></canvas>
+    <canvas id="interaction-canvas"></canvas>
+
+    <script type="module">
+        import { HandLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+        const HAND_CONNECTIONS = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [5, 9], [9, 10], [10, 11], [11, 12], [9, 13], [13, 14], [14, 15], [15, 16], [13, 17], [17, 18], [18, 19], [19, 20], [0, 17]];
+
+        const video = document.getElementById("input_video");
+        const bgCanvas = document.getElementById("background-canvas");
+        const bgCtx = bgCanvas.getContext("2d");
+        const intCanvas = document.getElementById("interaction-canvas");
+        const intCtx = intCanvas.getContext("2d");
+        const drawingUtils = new DrawingUtils(intCtx);
+        
+        let handLandmarker;
+        let particlesArray = [];
+        const FINGER_TIPS = [4, 8, 12, 16, 20]; // Puntos de las yemas de los dedos
+
+        // --- NUEVA CLASE DE PARTÍCULA PARA LAS ESTELAS ---
+        class Particle {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                // Movimiento aleatorio para el efecto de "chispa"
+                this.speedX = Math.random() * 4 - 2; 
+                this.speedY = Math.random() * 4 - 2;
+                this.size = Math.random() * 8 + 4; // Tamaño inicial
+                this.life = 1; // Vida de la partícula (1 = 100%)
+                this.color = `hsl(${Math.random() * 60 + 200}, 100%, 70%)`; // Tonos azules y púrpuras
+            }
+
+            update() {
+                this.x += this.speedX;
+                this.y += this.speedY;
+                this.size *= 0.97; // Se encoge con el tiempo
+                this.life -= 0.02; // Pierde vida
+            }
+
+            draw() {
+                // Dibuja la partícula con una opacidad basada en su vida
+                intCtx.fillStyle = this.color;
+                intCtx.globalAlpha = this.life;
+                intCtx.beginPath();
+                intCtx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                intCtx.fill();
+                intCtx.globalAlpha = 1; // Restaura la opacidad
+            }
+        }
+
+        async function createHandLandmarker() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, { 
+                baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
+                runningMode: "VIDEO", 
+                numHands: 2 
+            });
+            startCamera();
+        }
+        createHandLandmarker();
+
+        function startCamera() {
+            navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", () => {
+                    [bgCanvas, intCanvas].forEach(c => { c.width = video.videoWidth; c.height = video.videoHeight; });
+                    const scaleFactor = Math.min(window.innerWidth / video.videoWidth, window.innerHeight / video.videoHeight);
+                    const newWidth = video.videoWidth * scaleFactor;
+                    const newHeight = video.videoHeight * scaleFactor;
+                    const newLeft = (window.innerWidth - newWidth) / 2;
+                    const newTop = (window.innerHeight - newHeight) / 2;
+                    [bgCanvas, intCanvas].forEach(c => { c.style.width = `${newWidth}px`; c.style.height = `${newHeight}px`; c.style.left = `${newLeft}px`; c.style.top = `${newTop}px`; });
+                    animate();
+                });
+            });
+        }
+
+        function animate() {
+            bgCtx.drawImage(video, 0, 0, bgCanvas.width, bgCanvas.height);
+            // El canvas de interacción ahora tiene un efecto de "desvanecimiento" para las estelas
+            intCtx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+            intCtx.fillRect(0, 0, intCanvas.width, intCanvas.height);
+
+            // Actualiza, dibuja y elimina las partículas muertas
+            particlesArray.forEach((p, index) => {
+                p.update();
+                if (p.life <= 0 || p.size <= 0.5) {
+                    particlesArray.splice(index, 1);
+                } else {
+                    p.draw();
+                }
+            });
+
+            if (handLandmarker) {
+                const results = handLandmarker.detectForVideo(video, performance.now());
+                if (results.landmarks && results.landmarks.length > 0) {
+                    for (const landmarks of results.landmarks) {
+                        // Genera nuevas partículas en las yemas de los dedos
+                        FINGER_TIPS.forEach(tipIndex => {
+                            const point = landmarks[tipIndex];
+                            // Genera 2 partículas por frame en cada dedo para una estela más densa
+                            for (let i = 0; i < 2; i++) {
+                                particlesArray.push(new Particle(point.x * intCanvas.width, point.y * intCanvas.height));
+                            }
+                        });
+                        // Dibuja un esqueleto más sutil
+                        drawingUtils.drawConnectors(landmarks, HAND_CONNECTIONS, { color: 'rgba(255, 255, 255, 0.3)', lineWidth: 1 });
+                        drawingUtils.drawLandmarks(landmarks, { color: 'rgba(0, 255, 150, 0.5)', lineWidth: 1, radius: 2 });
+                    }
+                }
+            }
+            requestAnimationFrame(animate);
+        }
+    </script>
+</body>
+</html>

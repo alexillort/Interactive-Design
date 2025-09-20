@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Lienzo de Partículas Interactivo</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        #particle-canvas {
+            transform: scaleX(-1); /* Efecto espejo para que coincida con tu movimiento */
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        #input_video {
+            display: none; /* El video está oculto, solo lo usamos para la detección */
+        }
+    </style>
+</head>
+<body>
+    <video id="input_video" autoplay playsinline></video>
+    <canvas id="particle-canvas"></canvas>
+
+    <script type="module">
+        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+        const video = document.getElementById("input_video");
+        const canvas = document.getElementById("particle-canvas");
+        const ctx = canvas.getContext("2d");
+
+        let handLandmarker;
+        let particles = [];
+
+        // --- CONFIGURACIÓN DEL EFECTO ---
+        const PARTICLE_COUNT = 300; // ¿Cuántas partículas quieres?
+        const REPULSION_RADIUS = 100; // Radio de influencia de la mano (en píxeles)
+        const REPULSION_STRENGTH = 5; // Fuerza con la que la mano empuja las partículas
+        const MAX_CONNECTION_DIST = 90; // Distancia máxima para conectar partículas
+        const PARTICLE_SPEED = 1; // Velocidad base de las partículas
+
+        // Función para inicializar MediaPipe
+        async function createHandLandmarker() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
+                runningMode: "VIDEO",
+                numHands: 2
+            });
+            startCamera();
+        }
+        createHandLandmarker();
+
+        // Inicia la cámara y la detección
+        function startCamera() {
+            navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", () => {
+                    canvas.width = window.innerWidth;
+                    canvas.height = window.innerHeight;
+                    createParticles();
+                    animate();
+                });
+            }).catch(err => console.error("ERROR: No se pudo acceder a la cámara.", err));
+        }
+
+        // Clase para definir una partícula
+        class Particle {
+            constructor(x, y, color) {
+                this.x = x;
+                this.y = y;
+                this.size = Math.random() * 3 + 1;
+                this.vx = (Math.random() - 0.5) * PARTICLE_SPEED;
+                this.vy = (Math.random() - 0.5) * PARTICLE_SPEED;
+                this.color = color;
+            }
+
+            // Actualiza la posición y maneja los bordes
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+
+                if (this.x < 0 || this.x > canvas.width) this.vx *= -1;
+                if (this.y < 0 || this.y > canvas.height) this.vy *= -1;
+            }
+
+            // Dibuja la partícula en el canvas
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+        
+        // Crea el enjambre inicial de partículas
+        function createParticles() {
+             const colors = ['#00ff99', '#ff00ff', '#00ffff', '#ffff00'];
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                particles.push(new Particle(
+                    Math.random() * canvas.width,
+                    Math.random() * canvas.height,
+                    colors[Math.floor(Math.random() * colors.length)]
+                ));
+            }
+        }
+        
+        // Dibuja las líneas de "constelación" entre partículas cercanas
+        function connectParticles() {
+            for (let a = 0; a < particles.length; a++) {
+                for (let b = a; b < particles.length; b++) {
+                    const dx = particles[a].x - particles[b].x;
+                    const dy = particles[a].y - particles[b].y;
+                    const distance = Math.hypot(dx, dy);
+
+                    if (distance < MAX_CONNECTION_DIST) {
+                        const opacity = 1 - (distance / MAX_CONNECTION_DIST);
+                        ctx.strokeStyle = `rgba(255, 255, 255, ${opacity * 0.5})`;
+                        ctx.lineWidth = 1;
+                        ctx.beginPath();
+                        ctx.moveTo(particles[a].x, particles[a].y);
+                        ctx.lineTo(particles[b].x, particles[b].y);
+                        ctx.stroke();
+                    }
+                }
+            }
+        }
+        
+        // El bucle principal de animación
+        function animate() {
+            // Fondo semitransparente para crear el efecto de estela
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            let handLandmarks = [];
+            if (handLandmarker && video.readyState >= 2) {
+                const results = handLandmarker.detectForVideo(video, performance.now());
+                if (results.landmarks) {
+                    for (const landmarks of results.landmarks) {
+                        // Convierte las coordenadas normalizadas a píxeles del canvas
+                        const pixelLandmarks = landmarks.map(lm => ({
+                            x: lm.x * canvas.width,
+                            y: lm.y * canvas.height
+                        }));
+                        handLandmarks.push(...pixelLandmarks);
+                    }
+                }
+            }
+
+            particles.forEach(p => {
+                // Interacción con las manos
+                handLandmarks.forEach(lm => {
+                    const dx = p.x - lm.x;
+                    const dy = p.y - lm.y;
+                    const distance = Math.hypot(dx, dy);
+                    
+                    if (distance < REPULSION_RADIUS) {
+                        const force = (REPULSION_RADIUS - distance) / REPULSION_RADIUS;
+                        const angle = Math.atan2(dy, dx);
+                        p.vx += force * REPULSION_STRENGTH * Math.cos(angle);
+                        p.vy += force * REPULSION_STRENGTH * Math.sin(angle);
+                    }
+                });
+                
+                // Amortiguación para que no aceleren infinitamente
+                p.vx *= 0.96;
+                p.vy *= 0.96;
+
+                p.update();
+                p.draw();
+            });
+
+            connectParticles();
+
+            requestAnimationFrame(animate);
+        }
+    </script>
+</body>
+</html>

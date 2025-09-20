@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Vórtice Cósmico de Manos</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        #container { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; }
+        #input_video { display: none; }
+    </style>
+</head>
+<body>
+    <video id="input_video" autoplay playsinline></video>
+    <div id="container"></div>
+
+    <script async src="https://unpkg.com/es-module-shims@1.10.0/dist/es-module-shims.js"></script>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.164.1/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.164.1/examples/jsm/"
+        }
+    }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+        const FINGER_TIPS = [4, 8, 12, 16, 20]; // Yemas de los dedos
+
+        let handLandmarker;
+        let scene, camera, renderer, videoTexture, backgroundPlane;
+        let composer; // Para efectos de post-procesado
+
+        const particles = [];
+        const NUM_PARTICLES = 10000; // Un montón de partículas
+        const particleGeometry = new THREE.BufferGeometry();
+        const particleMaterial = new THREE.PointsMaterial({
+            size: 0.02,
+            vertexColors: true, // Permitir colores por vértice
+            blending: THREE.AdditiveBlending, // Para un efecto de brillo
+            transparent: true,
+            opacity: 0.9
+        });
+        let particleSystem;
+        const positions = new Float32Array(NUM_PARTICLES * 3);
+        const colors = new Float32Array(NUM_PARTICLES * 3);
+
+        const video = document.getElementById("input_video");
+        const container = document.getElementById("container");
+
+        // Historial de posiciones de los dedos para calcular velocidad y dirección
+        const prevHandLandmarks = [null, null];
+
+        async function setupMediapipe() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
+                    delegate: "GPU"
+                },
+                runningMode: "VIDEO",
+                numHands: 2
+            });
+            startCamera();
+        }
+
+        function startCamera() {
+            navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } }).then(stream => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", () => {
+                    video.width = video.videoWidth;
+                    video.height = video.videoHeight;
+                    setupThreeJS();
+                    animate();
+                });
+            }).catch(err => console.error("Error al acceder a la cámara:", err));
+        }
+
+        function setupThreeJS() {
+            scene = new THREE.Scene();
+            const aspect = window.innerWidth / window.innerHeight;
+            camera = new THREE.PerspectiveCamera(60, aspect, 0.1, 100);
+            camera.position.z = 1.5;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMappingExposure = 1.25; // Ajustar exposición para bloom
+            container.appendChild(renderer.domElement);
+            
+            videoTexture = new THREE.VideoTexture(video);
+            videoTexture.minFilter = THREE.LinearFilter;
+            videoTexture.magFilter = THREE.LinearFilter;
+            
+            const backgroundPlaneGeo = new THREE.PlaneGeometry(1, 1);
+            const backgroundPlaneMat = new THREE.MeshBasicMaterial({ map: videoTexture, depthWrite: false }); // depthWrite false para que no bloquee las partículas
+            backgroundPlane = new THREE.Mesh(backgroundPlaneGeo, backgroundPlaneMat);
+            backgroundPlane.position.z = -0.5;
+            scene.add(backgroundPlane);
+
+            adjustBackgroundPlaneSize();
+
+            // --- Configuración del Post-procesado (Bloom Effect) ---
+            composer = new EffectComposer(renderer);
+            composer.addPass(new RenderPass(scene, camera));
+
+            const bloomPass = new UnrealBloomPass(
+                new THREE.Vector2(window.innerWidth, window.innerHeight),
+                1.5, // strength
+                0.4, // radius
+                0.85 // threshold
+            );
+            composer.addPass(bloomPass);
+
+            // --- Inicialización de Partículas ---
+            initParticles();
+            particleSystem = new THREE.Points(particleGeometry, particleMaterial);
+            scene.add(particleSystem);
+
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function initParticles() {
+            const tempColor = new THREE.Color();
+            for (let i = 0; i < NUM_PARTICLES; i++) {
+                // Posición inicial aleatoria dentro de un rango
+                positions[i * 3] = (Math.random() - 0.5) * 2;
+                positions[i * 3 + 1] = (Math.random() - 0.5) * 2;
+                positions[i * 3 + 2] = (Math.random() - 0.5) * 2;
+
+                // Color inicial aleatorio
+                tempColor.setHSL(Math.random(), 1, 0.5);
+                colors[i * 3] = tempColor.r;
+                colors[i * 3 + 1] = tempColor.g;
+                colors[i * 3 + 2] = tempColor.b;
+
+                // Propiedades de la partícula
+                particles.push({
+                    velocity: new THREE.Vector3(
+                        (Math.random() - 0.5) * 0.005,
+                        (Math.random() - 0.5) * 0.005,
+                        (Math.random() - 0.5) * 0.005
+                    ),
+                    originalColor: tempColor.clone()
+                });
+            }
+
+            particleGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            particleGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+            particleGeometry.setDrawRange(0, NUM_PARTICLES);
+        }
+
+        function adjustBackgroundPlaneSize() {
+            if (!video.videoWidth || !video.videoHeight || !backgroundPlane) return;
+
+            const videoAspect = video.videoWidth / video.videoHeight;
+            const cameraFovRad = camera.fov * Math.PI / 180;
+            const viewDepth = Math.abs(camera.position.z - backgroundPlane.position.z);
+            const viewHeight = 2 * Math.tan(cameraFovRad / 2) * viewDepth;
+            const viewWidth = viewHeight * camera.aspect;
+
+            let planeWidth, planeHeight;
+
+            if (videoAspect > camera.aspect) {
+                planeHeight = viewHeight;
+                planeWidth = viewHeight * videoAspect;
+            } else {
+                planeWidth = viewWidth;
+                planeHeight = viewWidth / videoAspect;
+            }
+            backgroundPlane.scale.set(planeWidth, planeHeight, 1);
+        }
+
+        function onWindowResize() {
+            const aspect = window.innerWidth / window.innerHeight;
+            camera.aspect = aspect;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight); // También el composer
+            adjustBackgroundPlaneSize();
+        }
+
+        function updateParticles(landmarks) {
+            const currentAspect = window.innerWidth / window.innerHeight;
+            const scaledVideoWidth = backgroundPlane.scale.x;
+            const scaledVideoHeight = backgroundPlane.scale.y;
+
+            const activeTips = [];
+            if (landmarks && landmarks.length > 0) {
+                landmarks.forEach(handLandmarks => {
+                    FINGER_TIPS.forEach(tipIndex => {
+                        const landmark = handLandmarks[tipIndex];
+                        const x = (landmark.x - 0.5) * scaledVideoWidth;
+                        const y = -(landmark.y - 0.5) * scaledVideoHeight;
+                        const z = -landmark.z * 2.5 + 0.1;
+                        activeTips.push(new THREE.Vector3(x, y, z));
+                    });
+                });
+            }
+
+            const tempColor = new THREE.Color();
+
+            for (let i = 0; i < NUM_PARTICLES; i++) {
+                const particle = particles[i];
+                const pX = positions[i * 3];
+                const pY = positions[i * 3 + 1];
+                const pZ = positions[i * 3 + 2];
+                const particlePos = new THREE.Vector3(pX, pY, pZ);
+
+                let force = new THREE.Vector3();
+                let proximityColorInfluence = new THREE.Vector3();
+                let closestDistance = Infinity;
+
+                activeTips.forEach(tipPos => {
+                    const distance = particlePos.distanceTo(tipPos);
+                    closestDistance = Math.min(closestDistance, distance);
+
+                    // Atracción/Repulsión
+                    if (distance < 0.5) { // Radio de influencia
+                        const strength = (1 - distance / 0.5) * 0.0005; // Más fuerte cerca del dedo
+                        const dir = new THREE.Vector3().subVectors(particlePos, tipPos).normalize();
+                        force.add(dir.multiplyScalar(strength)); // Repulsión
+                        // Para atracción, cambia dir.multiplyScalar(strength) a dir.multiplyScalar(-strength)
+                    }
+
+                    // Influencia de color por proximidad (cambiar color cerca de los dedos)
+                    if (distance < 0.8) {
+                        const influenceFactor = (1 - distance / 0.8);
+                        // Mezcla el color original de la partícula con un color del dedo
+                        // (aquí, un color aleatorio para el ejemplo, pero podría ser fijo para cada dedo)
+                        const fingerColor = new THREE.Color().setHSL((tipPos.x + 1) / 2, 1, 0.7);
+                        proximityColorInfluence.add(fingerColor.multiplyScalar(influenceFactor));
+                    }
+                });
+
+                // Movimiento de Vórtice Básico
+                const vortexStrength = 0.0001;
+                force.x -= pY * vortexStrength;
+                force.y += pX * vortexStrength;
+
+                particle.velocity.add(force);
+                particle.velocity.multiplyScalar(0.98); // Fricción
+
+                // Actualizar posición
+                positions[i * 3] += particle.velocity.x;
+                positions[i * 3 + 1] += particle.velocity.y;
+                positions[i * 3 + 2] += particle.velocity.z;
+
+                // Limitar las partículas a un volumen para que no se alejen infinitamente
+                if (Math.abs(positions[i * 3]) > 2 || Math.abs(positions[i * 3 + 1]) > 2 || Math.abs(positions[i * 3 + 2]) > 2) {
+                    // Reiniciar partícula a una posición cercana al centro
+                    positions[i * 3] = (Math.random() - 0.5) * 0.5;
+                    positions[i * 3 + 1] = (Math.random() - 0.5) * 0.5;
+                    positions[i * 3 + 2] = (Math.random() - 0.5) * 0.5;
+                    particle.velocity.set(0,0,0); // Reiniciar velocidad
+                }
+
+                // Actualizar color basado en la proximidad o velocidad
+                if (activeTips.length > 0 && closestDistance < 0.8) {
+                    // Si está cerca de un dedo, usa la influencia de color de la proximidad
+                    // Normaliza la suma de influencias si hay múltiples dedos cerca
+                    if (proximityColorInfluence.length() > 0) {
+                        tempColor.copy(proximityColorInfluence).normalize();
+                    } else {
+                        // Si no hay influencia directa (ej. solo un dedo), usa el color del dedo
+                        tempColor.setHSL((activeTips[0].x + 1) / 2, 1, 0.7); // Ejemplo, el primer dedo
+                    }
+                } else {
+                    // Si no hay dedos cerca, usa un color más tenue o original
+                    tempColor.copy(particle.originalColor).multiplyScalar(0.7); // Atenuar el original
+                    tempColor.setHSL( (pX+1)/2, 0.8, 0.5 + Math.sin(performance.now() * 0.001 + i) * 0.2); // Color del vórtice base
+                }
+                
+                colors[i * 3] = tempColor.r;
+                colors[i * 3 + 1] = tempColor.g;
+                colors[i * 3 + 2] = tempColor.b;
+            }
+
+            particleGeometry.attributes.position.needsUpdate = true;
+            particleGeometry.attributes.color.needsUpdate = true;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (handLandmarker && video.readyState >= 4) {
+                const results = handLandmarker.detectForVideo(video, performance.now());
+                updateParticles(results.landmarks);
+            }
+            
+            // La magia del modo espejo
+            scene.scale.x = -1;
+
+            // Renderiza la escena con el compositor para aplicar el bloom
+            composer.render();
+        }
+
+        setupMediapipe();
+    </script>
+</body>
+</html>

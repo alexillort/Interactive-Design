@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Arpa Cósmica</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); }
+        #background-canvas { 
+            z-index: 1;
+            filter: brightness(0.4); 
+        }
+        #interaction-canvas { z-index: 2; }
+        #input_video { display: none; } 
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.7.77/Tone.js"></script>
+</head>
+<body>
+    <video id="input_video" autoplay playsinline></video>
+    <canvas id="background-canvas"></canvas>
+    <canvas id="interaction-canvas"></canvas>
+
+    <script type="module">
+        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+        const HAND_CONNECTIONS = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [5, 9], [9, 10], [10, 11], [11, 12], [9, 13], [13, 14], [14, 15], [15, 16], [13, 17], [17, 18], [18, 19], [19, 20], [0, 17]];
+
+        const video = document.getElementById("input_video");
+        const bgCanvas = document.getElementById("background-canvas");
+        const bgCtx = bgCanvas.getContext("2d");
+        const intCanvas = document.getElementById("interaction-canvas");
+        const intCtx = intCanvas.getContext("2d");
+        
+        let handLandmarker;
+        let noise;
+        let stars = [];
+
+        // --- CONFIGURACIÓN DE AUDIO ---
+        const reverb = new Tone.Reverb({ decay: 5, wet: 0.5 }).toDestination();
+        const synth = new Tone.PolySynth(Tone.FMSynth, {
+            "harmonicity": 3.01, "modulationIndex": 14, "envelope": { "attack": 0.01, "decay": 0.2, "sustain": 0.1, "release": 2 }
+        }).connect(reverb);
+        const notes = ["C3", "D3", "E3", "G3", "A3", "C4", "D4", "E4", "G4", "A4", "C5", "E5", "G5", "A5", "C6"];
+        
+        // --- Lógica para el Arpa ---
+        const NUM_STRINGS = 20; // Número de "cuerdas" verticales
+        let lastFingerPositions = new Array(10).fill({x: -1, y: -1, lastString: -1}); // Para 2 manos, 5 dedos cada una
+
+        class Star {
+            constructor(x, y, isNote) {
+                this.x = x; this.y = y;
+                this.size = isNote ? Math.random() * 6 + 4 : Math.random() * 2 + 1; // Las notas crean estrellas más grandes
+                this.maxSize = this.size * 2;
+                this.life = 1.0;
+                this.pulsingSpeed = Math.random() * 0.05 + 0.01;
+                this.color = `hsl(${isNote ? 280 + Math.random() * 60 : 180 + Math.random() * 60}, 100%, 85%)`; // Notas en tonos púrpuras
+            }
+            update(time) { this.size = this.maxSize + Math.sin(time * this.pulsingSpeed) * (this.maxSize / 2); this.life -= 0.01; }
+            draw() {
+                intCtx.fillStyle = this.color; intCtx.globalAlpha = this.life;
+                intCtx.shadowBlur = 10; intCtx.shadowColor = this.color;
+                intCtx.beginPath(); intCtx.arc(this.x, this.y, this.size, 0, Math.PI * 2); intCtx.fill();
+            }
+        }
+
+        async function createHandLandmarker() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, { 
+                baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
+                runningMode: "VIDEO", numHands: 2 
+            });
+            startCamera();
+        }
+        createHandLandmarker();
+
+        function startCamera() {
+            noise = new p5().noise;
+            navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", () => {
+                    [bgCanvas, intCanvas].forEach(c => { c.width = video.videoWidth; c.height = video.videoHeight; });
+                    const scaleFactor = Math.min(window.innerWidth / video.videoWidth, window.innerHeight / video.videoHeight);
+                    const newWidth = video.videoWidth * scaleFactor;
+                    const newHeight = video.videoHeight * scaleFactor;
+                    const newLeft = (window.innerWidth - newWidth) / 2;
+                    const newTop = (window.innerHeight - newHeight) / 2;
+                    [bgCanvas, intCanvas].forEach(c => { c.style.width = `${newWidth}px`; c.style.height = `${newHeight}px`; c.style.left = `${newLeft}px`; c.style.top = `${newTop}px`; });
+                    
+                    // Evento para iniciar el audio
+                    intCanvas.addEventListener('click', () => { Tone.start(); console.log("Audio iniciado."); }, { once: true });
+
+                    animate(0);
+                });
+            });
+        }
+
+        function animate(time) {
+            bgCtx.drawImage(video, 0, 0, bgCanvas.width, bgCanvas.height);
+            intCtx.fillStyle = 'rgba(0, 0, 10, 0.15)';
+            intCtx.fillRect(0, 0, intCanvas.width, intCanvas.height);
+
+            stars.forEach((star, index) => { star.update(time); if (star.life <= 0) { stars.splice(index, 1); } else { star.draw(); } });
+            intCtx.shadowBlur = 0; intCtx.globalAlpha = 1;
+
+            if (handLandmarker) {
+                const results = handLandmarker.detectForVideo(video, performance.now());
+                if (results.landmarks && results.landmarks.length > 0) {
+                    let fingerIndex = 0;
+                    for (const landmarks of results.landmarks) {
+                        const FINGER_TIPS = [4, 8, 12, 16, 20]; // Pulgar, índice, medio, anular, meñique
+                        FINGER_TIPS.forEach(tipIdx => {
+                            const point = landmarks[tipIdx];
+                            const currentPos = { x: point.x * intCanvas.width, y: point.y * intCanvas.height };
+                            const lastPos = lastFingerPositions[fingerIndex];
+
+                            const currentString = Math.floor(currentPos.x / (intCanvas.width / NUM_STRINGS));
+                            
+                            // Si el dedo cruza una nueva "cuerda"
+                            if (lastPos.lastString !== -1 && currentString !== lastPos.lastString) {
+                                // La nota depende de la altura (Y)
+                                const noteIndex = Math.floor((1 - point.y) * notes.length);
+                                const note = notes[noteIndex];
+
+                                // El volumen depende de la velocidad del movimiento
+                                const velocity = Math.sqrt(Math.pow(currentPos.x - lastPos.x, 2) + Math.pow(currentPos.y - lastPos.y, 2));
+                                const volume = Math.min(1, velocity / 50); // Mapea la velocidad a un volumen entre 0 y 1
+
+                                if (note && volume > 0.1) {
+                                    synth.triggerAttackRelease(note, "1n", Tone.now(), volume);
+                                    // Crea una estrella más grande para la nota tocada
+                                    stars.push(new Star(currentPos.x, currentPos.y, true));
+                                }
+                            }
+                            
+                            // Actualiza la última posición del dedo
+                            lastFingerPositions[fingerIndex] = { ...currentPos, lastString: currentString };
+                            fingerIndex++;
+                        });
+
+                        // Dibuja las constelaciones
+                        intCtx.strokeStyle = 'rgba(200, 220, 255, 0.4)'; intCtx.lineWidth = 1;
+                        intCtx.shadowBlur = 10; intCtx.shadowColor = 'rgba(150, 200, 255, 0.8)';
+                        for (const connection of HAND_CONNECTIONS) {
+                            const startPoint = landmarks[connection[0]]; const endPoint = landmarks[connection[1]];
+                            intCtx.beginPath();
+                            intCtx.moveTo(startPoint.x * intCanvas.width, startPoint.y * intCanvas.height);
+                            intCtx.lineTo(endPoint.x * intCanvas.width, endPoint.y * intCanvas.height);
+                            intCtx.stroke();
+                        }
+                    }
+                }
+            }
+            requestAnimationFrame(animate);
+        }
+    </script>
+</body>
+</html>

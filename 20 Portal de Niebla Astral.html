@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Portal de Niebla Astral</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        #render-canvas { position: absolute; top: 0; left: 0; }
+        #input_video { transform: scaleX(-1); display: none; }
+    </style>
+</head>
+<body>
+    <video id="input_video" autoplay playsinline></video>
+    <canvas id="render-canvas"></canvas>
+
+    <script type="importmap">
+    { "imports": { "three": "https://unpkg.com/three@0.164.1/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+        // --- MEDIAPIPE SETUP ---
+        const video = document.getElementById("input_video");
+        let handLandmarker;
+        async function createHandLandmarker() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
+                runningMode: "VIDEO", numHands: 2
+            });
+            startCamera();
+        }
+        function startCamera() {
+            navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", () => {
+                    init();
+                    animate();
+                });
+            });
+        }
+        createHandLandmarker();
+
+        // --- THREE.JS SETUP ---
+        let scene, camera, renderer, clock;
+        let fogMeshes = [];
+        const handInteractions = [
+            { position: new THREE.Vector3(0,0,-1000), density: 0 }, // Hand 1
+            { position: new THREE.Vector3(0,0,-1000), density: 0 }  // Hand 2
+        ];
+
+        // --- PARÁMETROS DE NIEBLA ---
+        const NUM_FOG_LAYERS = 20;
+        const FOG_RADIUS = 150;
+        const INTERACTION_RADIUS = 80;
+        const MIN_PINCH_DIST = 0.03;
+        const MAX_PINCH_DIST = 0.2;
+
+        // SHADER DE NIEBLA (GLSL)
+        const fogVertexShader = `
+            varying vec2 vUv;
+            varying vec3 vWorldPosition;
+            void main() {
+                vUv = uv;
+                vec4 modelPosition = modelMatrix * vec4(position, 1.0);
+                vWorldPosition = modelPosition.xyz;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+        `;
+
+        const fogFragmentShader = `
+            uniform float time;
+            uniform vec3 hand1Pos;
+            uniform float hand1Density;
+            uniform vec3 hand2Pos;
+            uniform float hand2Density;
+            uniform float interactionRadius;
+            
+            varying vec2 vUv;
+            varying vec3 vWorldPosition;
+
+            // --- NUEVO ALGORITMO DE RUIDO (MÁS SIMPLE Y COMPATIBLE) ---
+            float random(vec3 p) {
+                return fract(sin(dot(p.xyz, vec3(12.9898, 78.233, 151.7182))) * 43758.5453);
+            }
+
+            float noise(vec3 p) {
+                vec3 i = floor(p);
+                vec3 f = fract(p);
+                f = f * f * (3.0 - 2.0 * f); // Smoothstep
+
+                float a = random(i + vec3(0.0, 0.0, 0.0));
+                float b = random(i + vec3(1.0, 0.0, 0.0));
+                float c = random(i + vec3(0.0, 1.0, 0.0));
+                float d = random(i + vec3(1.0, 1.0, 0.0));
+                float e = random(i + vec3(0.0, 0.0, 1.0));
+                float f_ = random(i + vec3(1.0, 0.0, 1.0));
+                float g = random(i + vec3(0.0, 1.0, 1.0));
+                float h = random(i + vec3(1.0, 1.0, 1.0));
+
+                return mix(mix(mix(a, b, f.x), mix(c, d, f.x), f.y),
+                           mix(mix(e, f_, f.x), mix(g, h, f.x), f.y), f.z);
+            }
+            // --- FIN DEL NUEVO ALGORITMO ---
+            
+            void main() {
+                float alpha = 0.0;
+                vec3 color = vec3(0.0);
+                
+                // Generar varias capas de ruido (fractal) para un efecto más nuboso
+                float baseNoise = 0.0;
+                baseNoise += noise(vWorldPosition * 0.01 + time * 0.05) * 1.0;
+                baseNoise += noise(vWorldPosition * 0.03 + time * 0.1) * 0.5;
+                baseNoise += noise(vWorldPosition * 0.06) * 0.25;
+                baseNoise /= 1.75; // Normalizar
+
+                alpha = baseNoise * 0.15; // Base de transparencia
+
+                // Interacción con mano 1
+                float dist1 = distance(vWorldPosition, hand1Pos);
+                if (dist1 < interactionRadius) {
+                    float influence1 = 1.0 - dist1 / interactionRadius;
+                    alpha += influence1 * hand1Density * 0.5;
+                    color += vec3(0.0, 0.5, 1.0) * influence1 * hand1Density * 2.0;
+                }
+
+                // Interacción con mano 2
+                float dist2 = distance(vWorldPosition, hand2Pos);
+                if (dist2 < interactionRadius) {
+                    float influence2 = 1.0 - dist2 / interactionRadius;
+                    alpha += influence2 * hand2Density * 0.5;
+                    color += vec3(1.0, 0.3, 0.0) * influence2 * hand2Density * 2.0;
+                }
+                
+                gl_FragColor = vec4(color, alpha);
+            }
+        `;
+
+        function init() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 1000);
+            camera.position.z = 150;
+
+            renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('render-canvas'), antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setClearColor(0x000000, 1);
+
+            clock = new THREE.Clock();
+
+            const fogGeometry = new THREE.PlaneGeometry(FOG_RADIUS * 3, FOG_RADIUS * 3, 1, 1);
+            for (let i = 0; i < NUM_FOG_LAYERS; i++) {
+                const material = new THREE.ShaderMaterial({
+                    uniforms: {
+                        time: { value: 0 },
+                        hand1Pos: { value: handInteractions[0].position },
+                        hand1Density: { value: handInteractions[0].density },
+                        hand2Pos: { value: handInteractions[1].position },
+                        hand2Density: { value: handInteractions[1].density },
+                        interactionRadius: { value: INTERACTION_RADIUS }
+                    },
+                    vertexShader: fogVertexShader,
+                    fragmentShader: fogFragmentShader,
+                    transparent: true,
+                    blending: THREE.AdditiveBlending,
+                    depthWrite: false
+                });
+                const mesh = new THREE.Mesh(fogGeometry, material);
+                mesh.position.z = (i / NUM_FOG_LAYERS - 0.5) * FOG_RADIUS * 2;
+                fogMeshes.push(mesh);
+                scene.add(mesh);
+            }
+            
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const elapsedTime = clock.getElapsedTime();
+
+            const results = handLandmarker?.detectForVideo(video, performance.now());
+            
+            handInteractions.forEach(hand => {
+                hand.position.z = -1000;
+                hand.density = 0;
+            });
+
+            if (results?.landmarks) {
+                results.landmarks.forEach((landmarks, index) => {
+                    const palm = landmarks[9];
+                    const thumbTip = landmarks[4];
+                    const indexTip = landmarks[8];
+                    const pinchDist = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y);
+                    const density = THREE.MathUtils.mapLinear(pinchDist, MAX_PINCH_DIST, MIN_PINCH_DIST, 0.0, 1.0);
+                    
+                    handInteractions[index].position.set(
+                        (palm.x - 0.5) * FOG_RADIUS * 2 * -1,
+                        (palm.y - 0.5) * FOG_RADIUS * 2 * -1,
+                        0
+                    );
+                    handInteractions[index].density = THREE.MathUtils.clamp(density, 0.0, 1.0);
+                });
+            }
+
+            fogMeshes.forEach(mesh => {
+                mesh.material.uniforms.time.value = elapsedTime;
+                mesh.material.uniforms.hand1Pos.value.copy(handInteractions[0].position);
+                mesh.material.uniforms.hand1Density.value = handInteractions[0].density;
+                mesh.material.uniforms.hand2Pos.value.copy(handInteractions[1].position);
+                mesh.material.uniforms.hand2Density.value = handInteractions[1].density;
+                mesh.rotation.z += 0.0005 * (mesh.position.z / FOG_RADIUS);
+            });
+
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>

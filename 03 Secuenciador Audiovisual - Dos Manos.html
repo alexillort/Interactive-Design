@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Secuenciador Audiovisual - Dos Manos</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); }
+        /* #background-canvas { filter: grayscale(100%); z-index: 1; } */
+        #interaction-canvas { z-index: 2; }
+        #input_video { display: none; } 
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.7.77/Tone.js"></script>
+</head>
+<body>
+    <video id="input_video" autoplay playsinline></video>
+    <canvas id="background-canvas"></canvas>
+    <canvas id="interaction-canvas"></canvas>
+
+    <script type="module">
+        import { HandLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+        const HAND_CONNECTIONS = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [5, 9], [9, 10], [10, 11], [11, 12], [9, 13], [13, 14], [14, 15], [15, 16], [13, 17], [17, 18], [18, 19], [19, 20], [0, 17]];
+
+        const video = document.getElementById("input_video");
+        const bgCanvas = document.getElementById("background-canvas");
+        const bgCtx = bgCanvas.getContext("2d");
+        const intCanvas = document.getElementById("interaction-canvas");
+        const intCtx = intCanvas.getContext("2d");
+        const drawingUtils = new DrawingUtils(intCtx);
+        
+        let handLandmarker;
+        const reverb = new Tone.Reverb({ decay: 4, wet: 0.4 }).toDestination();
+        const synth = new Tone.PolySynth(Tone.FMSynth, { "harmonicity": 3, "modulationIndex": 10, "envelope": { "attack": 0.01, "decay": 0.2, "sustain": 0.1, "release": 1.5 } }).connect(reverb);
+        const notes = ["C4", "D4", "E4", "G4", "A4", "C5", "D5", "E5", "G5", "A5", "C6", "E6"];
+        const numCols = 16;
+        const numRows = 12;
+        let triggeredVisuals = [];
+
+        async function createHandLandmarker() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, { 
+                baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
+                runningMode: "VIDEO", 
+                // --- CAMBIO 1: Se actualiza el número de manos a 2 ---
+                numHands: 2 
+            });
+            startCamera();
+        }
+        createHandLandmarker();
+
+        function startCamera() {
+            navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", () => {
+                    [bgCanvas, intCanvas].forEach(c => { c.width = video.videoWidth; c.height = video.videoHeight; });
+                    const scaleFactor = Math.min(window.innerWidth / video.videoWidth, window.innerHeight / video.videoHeight);
+                    const newWidth = video.videoWidth * scaleFactor;
+                    const newHeight = video.videoHeight * scaleFactor;
+                    const newLeft = (window.innerWidth - newWidth) / 2;
+                    const newTop = (window.innerHeight - newHeight) / 2;
+                    [bgCanvas, intCanvas].forEach(c => { c.style.width = `${newWidth}px`; c.style.height = `${newHeight}px`; c.style.left = `${newLeft}px`; c.style.top = `${newTop}px`; });
+                    intCanvas.addEventListener('click', () => { Tone.start(); }, { once: true });
+                    animate();
+                });
+            });
+        }
+
+        function animate() {
+            bgCtx.drawImage(video, 0, 0, bgCanvas.width, bgCanvas.height);
+            intCtx.clearRect(0, 0, intCanvas.width, intCanvas.height);
+            triggeredVisuals.forEach((vis, index) => {
+                vis.opacity -= 0.02;
+                if (vis.opacity <= 0) { triggeredVisuals.splice(index, 1); } 
+                else { intCtx.fillStyle = `rgba(255, 255, 255, ${vis.opacity})`; intCtx.fillRect(vis.x, vis.y, vis.w, vis.h); }
+            });
+            if (handLandmarker) {
+                const results = handLandmarker.detectForVideo(video, performance.now());
+                if (results.landmarks && results.landmarks.length > 0) {
+                    const colWidth = intCanvas.width / numCols;
+                    const rowHeight = intCanvas.height / numRows;
+                    const gridState = Array(numCols).fill(null).map(() => Array(numRows).fill(false));
+
+                    // --- CAMBIO 2: Se añade un bucle para procesar cada mano detectada ---
+                    for (const landmarks of results.landmarks) {
+                        for (const landmark of landmarks) {
+                            const col = Math.floor(landmark.x * numCols);
+                            const row = Math.floor(landmark.y * numRows);
+                            if (col >= 0 && col < numCols && row >= 0 && row < numRows) {
+                                if (!gridState[col][row]) {
+                                    gridState[col][row] = true;
+                                    const note = notes[row % notes.length];
+                                    synth.triggerAttackRelease(note, "8n");
+                                    triggeredVisuals.push({ x: col * colWidth, y: row * rowHeight, w: colWidth, h: rowHeight, opacity: 1.0 });
+                                }
+                            }
+                        }
+                        drawingUtils.drawConnectors(landmarks, HAND_CONNECTIONS, { color: 'rgba(255, 255, 255, 0.5)', lineWidth: 1 });
+                        drawingUtils.drawLandmarks(landmarks, { color: 'rgba(0, 255, 0, 0.7)', lineWidth: 1, radius: 2 });
+                    }
+                }
+            }
+            requestAnimationFrame(animate);
+        }
+    </script>
+</body>
+</html>
