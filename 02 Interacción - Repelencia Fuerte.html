@@ -79,7 +79,7 @@
         }
 
         // Aumenté el número de partículas para que el efecto sea más denso y notorio.
-        function initParticles() { for (let i = 0; i < 500; i++) { particlesArray.push(new Particle()); } }
+        function initParticles() { for (let i = 0; i < 5000; i++) { particlesArray.push(new Particle()); } }
         
         async function createHandLandmarker() {
             const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
@@ -129,4 +129,5 @@
         }
     </script>
 </body>
+
 </html>
