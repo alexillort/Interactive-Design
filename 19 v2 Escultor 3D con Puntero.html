@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Escultor 3D con Punteros</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #111; }
+        #render-canvas { position: absolute; top: 0; left: 0; }
+        #input_video { transform: scaleX(-1); display: none; }
+    </style>
+</head>
+<body>
+    <video id="input_video" autoplay playsinline></video>
+    <canvas id="render-canvas"></canvas>
+
+    <script type="importmap">
+    { "imports": { "three": "https://unpkg.com/three@0.164.1/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+        // --- MEDIAPIPE SETUP ---
+        const video = document.getElementById("input_video");
+        let handLandmarker;
+        async function createHandLandmarker() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
+                runningMode: "VIDEO", numHands: 2
+            });
+            startCamera();
+        }
+        function startCamera() {
+            navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", () => {
+                    init();
+                    animate();
+                });
+            });
+        }
+        createHandLandmarker();
+
+        // --- THREE.JS SETUP ---
+        let scene, camera, renderer, sphere, originalVertices;
+        const FINGER_TIPS_INDICES = [4, 8, 12, 16, 20]; // Yemas de los dedos
+        let fingerMarkers = []; // NUEVO: Array para los punteros de los dedos
+
+        // --- PARÁMETROS DE ESCULTURA ---
+        const DEFORMATION_RADIUS = 35;
+        const PUSH_PULL_STRENGTH = 0.5;
+        const SMOOTHING_FACTOR = 0.95;
+
+        function init() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 100;
+
+            renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('render-canvas'), antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            
+            const geometry = new THREE.IcosahedronGeometry(50, 64);
+            originalVertices = new Float32Array(geometry.attributes.position.array);
+            geometry.attributes.position.setUsage(THREE.DynamicDrawUsage);
+            
+            const material = new THREE.MeshNormalMaterial({ flatShading: false });
+            sphere = new THREE.Mesh(geometry, material);
+            scene.add(sphere);
+
+            // NUEVO: Crear los 10 punteros para los dedos (5 por mano)
+            const markerGeometry = new THREE.SphereGeometry(1.5, 12, 12); // Esferas más pequeñas
+            const markerMaterial = new THREE.MeshBasicMaterial({ color: 0x00ffff }); // Color cian
+            for (let i = 0; i < 10; i++) {
+                const marker = new THREE.Mesh(markerGeometry, markerMaterial);
+                marker.position.set(0, 0, -1000); // Inician fuera de la vista
+                scene.add(marker);
+                fingerMarkers.push(marker);
+            }
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            const pointLight = new THREE.PointLight(0xffffff, 1);
+            pointLight.position.set(100, 100, 100);
+            scene.add(pointLight);
+            
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const results = handLandmarker?.detectForVideo(video, performance.now());
+            const activeHands = [];
+            
+            // NUEVO: Ocultar todos los punteros al inicio de cada frame
+            fingerMarkers.forEach(marker => marker.position.set(0, 0, -1000));
+            let markerIndex = 0;
+
+            if (results?.landmarks) {
+                results.landmarks.forEach((landmarks) => {
+                    const palm = landmarks[9];
+                    const thumbTip = landmarks[4];
+                    const indexTip = landmarks[8];
+                    const pinchDist = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y);
+                    const forceDirection = THREE.MathUtils.mapLinear(pinchDist, 0.2, 0.03, -1, 1);
+
+                    activeHands.push({
+                        position: new THREE.Vector3( (palm.x - 0.5) * 250 * -1, (palm.y - 0.5) * 250 * -1, 0 ),
+                        force: forceDirection
+                    });
+
+                    // NUEVO: Actualizar la posición de los punteros de los dedos
+                    FINGER_TIPS_INDICES.forEach(tipIndex => {
+                        if (markerIndex < fingerMarkers.length) {
+                            const tip = landmarks[tipIndex];
+                            fingerMarkers[markerIndex].position.set(
+                                (tip.x - 0.5) * 250 * -1,
+                                (tip.y - 0.5) * 250 * -1,
+                                60 // Posición Z fija para que estén frente a la esfera
+                            );
+                            markerIndex++;
+                        }
+                    });
+                });
+            }
+
+            // Deformar la malla de la esfera
+            const vertices = sphere.geometry.attributes.position.array;
+            for (let i = 0; i < vertices.length; i += 3) {
+                const vertex = new THREE.Vector3(originalVertices[i], originalVertices[i+1], originalVertices[i+2]);
+                let totalDisplacement = new THREE.Vector3();
+
+                activeHands.forEach(hand => {
+                    const dist = vertex.distanceTo(hand.position);
+                    if (dist < DEFORMATION_RADIUS) {
+                        const influence = (DEFORMATION_RADIUS - dist) / DEFORMATION_RADIUS;
+                        const displacement = vertex.clone().normalize().multiplyScalar(influence * PUSH_PULL_STRENGTH * hand.force);
+                        totalDisplacement.add(displacement);
+                    }
+                });
+
+                const currentVertex = new THREE.Vector3(vertices[i], vertices[i+1], vertices[i+2]);
+                const originalV = new THREE.Vector3(originalVertices[i], originalVertices[i+1], originalVertices[i+2]);
+                const smoothedVertex = currentVertex.lerp(originalV, 1 - SMOOTHING_FACTOR);
+                
+                vertices[i] = smoothedVertex.x + totalDisplacement.x;
+                vertices[i+1] = smoothedVertex.y + totalDisplacement.y;
+                vertices[i+2] = smoothedVertex.z + totalDisplacement.z;
+            }
+            sphere.geometry.attributes.position.needsUpdate = true;
+            sphere.geometry.computeVertexNormals();
+            
+            sphere.rotation.x += 0.0005;
+            sphere.rotation.y += 0.001;
+
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
