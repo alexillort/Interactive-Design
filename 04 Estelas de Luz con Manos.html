@@ -2,9 +2,9 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Estelas de Luz con Manos</title>
+    <title>Estelas de Luz</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #000; }
+        body { margin: 0; overflow: hidden; background-color: #000; cursor: pointer; } /* Añadido cursor para indicar que es clickeable */
         canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); }
         #background-canvas { z-index: 1; }
         #interaction-canvas { z-index: 2; }
@@ -30,36 +30,46 @@
         
         let handLandmarker;
         let particlesArray = [];
-        const FINGER_TIPS = [4, 8, 12, 16, 20]; // Puntos de las yemas de los dedos
+        const FINGER_TIPS = [4, 8, 12, 16, 20];
 
-        // --- NUEVA CLASE DE PARTÍCULA PARA LAS ESTELAS ---
+        // --- CAMBIO 1: Variable de estado y manejador de eventos ---
+        let showTracking = false;
+
+        function activateTrackingVisibility() {
+            showTracking = true; // Activa la visibilidad permanentemente
+            // Remueve los listeners para que solo se ejecute una vez
+            window.removeEventListener('click', activateTrackingVisibility);
+            window.removeEventListener('touchstart', activateTrackingVisibility);
+        }
+        window.addEventListener('click', activateTrackingVisibility);
+        window.addEventListener('touchstart', activateTrackingVisibility);
+
+
         class Particle {
             constructor(x, y) {
                 this.x = x;
                 this.y = y;
-                // Movimiento aleatorio para el efecto de "chispa"
                 this.speedX = Math.random() * 4 - 2; 
                 this.speedY = Math.random() * 4 - 2;
-                this.size = Math.random() * 8 + 4; // Tamaño inicial
-                this.life = 1; // Vida de la partícula (1 = 100%)
-                this.color = `hsl(${Math.random() * 60 + 200}, 100%, 70%)`; // Tonos azules y púrpuras
+                this.size = Math.random() * 8 + 4;
+                this.life = 1;
+                this.color = `hsl(${Math.random() * 60 + 200}, 100%, 70%)`;
             }
 
             update() {
                 this.x += this.speedX;
                 this.y += this.speedY;
-                this.size *= 0.97; // Se encoge con el tiempo
-                this.life -= 0.02; // Pierde vida
+                this.size *= 0.97;
+                this.life -= 0.02;
             }
 
             draw() {
-                // Dibuja la partícula con una opacidad basada en su vida
                 intCtx.fillStyle = this.color;
                 intCtx.globalAlpha = this.life;
                 intCtx.beginPath();
                 intCtx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
                 intCtx.fill();
-                intCtx.globalAlpha = 1; // Restaura la opacidad
+                intCtx.globalAlpha = 1;
             }
         }
 
@@ -92,11 +102,9 @@
 
         function animate() {
             bgCtx.drawImage(video, 0, 0, bgCanvas.width, bgCanvas.height);
-            // El canvas de interacción ahora tiene un efecto de "desvanecimiento" para las estelas
             intCtx.fillStyle = 'rgba(0, 0, 0, 0.1)';
             intCtx.fillRect(0, 0, intCanvas.width, intCanvas.height);
 
-            // Actualiza, dibuja y elimina las partículas muertas
             particlesArray.forEach((p, index) => {
                 p.update();
                 if (p.life <= 0 || p.size <= 0.5) {
@@ -110,17 +118,19 @@
                 const results = handLandmarker.detectForVideo(video, performance.now());
                 if (results.landmarks && results.landmarks.length > 0) {
                     for (const landmarks of results.landmarks) {
-                        // Genera nuevas partículas en las yemas de los dedos
                         FINGER_TIPS.forEach(tipIndex => {
                             const point = landmarks[tipIndex];
-                            // Genera 2 partículas por frame en cada dedo para una estela más densa
                             for (let i = 0; i < 2; i++) {
                                 particlesArray.push(new Particle(point.x * intCanvas.width, point.y * intCanvas.height));
                             }
                         });
-                        // Dibuja un esqueleto más sutil
-                        drawingUtils.drawConnectors(landmarks, HAND_CONNECTIONS, { color: 'rgba(255, 255, 255, 0.3)', lineWidth: 1 });
-                        drawingUtils.drawLandmarks(landmarks, { color: 'rgba(0, 255, 150, 0.5)', lineWidth: 1, radius: 2 });
+
+                        // --- CAMBIO 2: Condición para dibujar el tracking ---
+                        // Solo se dibuja el esqueleto y los puntos si el usuario ha hecho clic.
+                        if (showTracking) {
+                            drawingUtils.drawConnectors(landmarks, HAND_CONNECTIONS, { color: 'rgba(255, 255, 255, 0.3)', lineWidth: 1 });
+                            drawingUtils.drawLandmarks(landmarks, { color: 'rgba(0, 255, 150, 0.5)', lineWidth: 1, radius: 2 });
+                        }
                     }
                 }
             }
