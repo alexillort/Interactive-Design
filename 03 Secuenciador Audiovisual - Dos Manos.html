@@ -33,8 +33,8 @@
         const synth = new Tone.PolySynth(Tone.FMSynth, { "harmonicity": 3, "modulationIndex": 10, "envelope": { "attack": 0.01, "decay": 0.2, "sustain": 0.1, "release": 1.5 } }).connect(reverb);
         const notes = ["C4", "D4", "E4", "G4", "A4", "C5", "D5", "E5", "G5", "A5", "C6", "E6"];
         // --- 16 y 12 Mas grandes ---
-        const numCols = 32; 
-        const numRows = 24;
+        const numCols = 16; 
+        const numRows = 12;
         let triggeredVisuals = [];
         let showTracking = false;
 
@@ -162,4 +162,5 @@
     </script>
 </body>
 </html>
+
 
