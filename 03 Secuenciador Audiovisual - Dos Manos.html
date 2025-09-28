@@ -2,11 +2,10 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Secuenciador Audiovisual - Dos Manos</title>
+    <title>Secuenciador Audiovisual LEGO</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #000; }
+        body { margin: 0; overflow: hidden; background-color: #000; cursor: pointer; }
         canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); }
-        /* #background-canvas { filter: grayscale(100%); z-index: 1; } */
         #interaction-canvas { z-index: 2; }
         #input_video { display: none; } 
     </style>
@@ -36,14 +35,61 @@
         const numCols = 16;
         const numRows = 12;
         let triggeredVisuals = [];
+        let showTracking = false;
+
+        // --- CAMBIO 1: Paleta de colores y nueva función de dibujo LEGO ---
+        const legoColors = [0, 28, 60, 120, 200, 240, 280]; // Hues para Rojo, Naranja, Amarillo, Verde, Cian, Azul, Púrpura
+
+        function drawLegoBlock(ctx, x, y, w, h, hue, opacity) {
+            ctx.globalAlpha = opacity;
+
+            const depth = Math.min(w, h) * 0.2;
+            const baseColor = `hsl(${hue}, 90%, 55%)`;
+            const shadowColor = `hsl(${hue}, 90%, 35%)`;
+
+            // Dibuja la base/sombra para dar profundidad
+            ctx.fillStyle = shadowColor;
+            ctx.fillRect(x, y, w, h);
+
+            // Dibuja la cara superior, ligeramente más pequeña para crear un borde
+            ctx.fillStyle = baseColor;
+            ctx.fillRect(x, y, w, h - depth);
+            
+            // Dibuja el "stud" (círculo) en el centro de la cara superior
+            const studRadius = Math.min(w, h) / 3.5;
+            const studX = x + w / 2;
+            const studY = y + (h - depth) / 2;
+
+            // Sombra del stud
+            ctx.fillStyle = shadowColor;
+            ctx.beginPath();
+            ctx.arc(studX, studY + depth * 0.1, studRadius, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Cuerpo principal del stud
+            ctx.fillStyle = baseColor;
+            ctx.beginPath();
+            ctx.arc(studX, studY, studRadius, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.globalAlpha = 1.0; // Restaura la opacidad global
+        }
+
+
+        function handleFirstInteraction() {
+            if (Tone.context.state !== 'running') { Tone.start(); }
+            showTracking = true;
+            window.removeEventListener('click', handleFirstInteraction);
+            window.removeEventListener('touchstart', handleFirstInteraction);
+        }
+        window.addEventListener('click', handleFirstInteraction);
+        window.addEventListener('touchstart', handleFirstInteraction);
 
         async function createHandLandmarker() {
             const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
             handLandmarker = await HandLandmarker.createFromOptions(vision, { 
                 baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
-                runningMode: "VIDEO", 
-                // --- CAMBIO 1: Se actualiza el número de manos a 2 ---
-                numHands: 2 
+                runningMode: "VIDEO", numHands: 2 
             });
             startCamera();
         }
@@ -60,7 +106,6 @@
                     const newLeft = (window.innerWidth - newWidth) / 2;
                     const newTop = (window.innerHeight - newHeight) / 2;
                     [bgCanvas, intCanvas].forEach(c => { c.style.width = `${newWidth}px`; c.style.height = `${newHeight}px`; c.style.left = `${newLeft}px`; c.style.top = `${newTop}px`; });
-                    intCanvas.addEventListener('click', () => { Tone.start(); }, { once: true });
                     animate();
                 });
             });
@@ -69,11 +114,18 @@
         function animate() {
             bgCtx.drawImage(video, 0, 0, bgCanvas.width, bgCanvas.height);
             intCtx.clearRect(0, 0, intCanvas.width, intCanvas.height);
+
+            // --- CAMBIO 2: Llama a la nueva función de dibujo ---
             triggeredVisuals.forEach((vis, index) => {
                 vis.opacity -= 0.02;
-                if (vis.opacity <= 0) { triggeredVisuals.splice(index, 1); } 
-                else { intCtx.fillStyle = `rgba(255, 255, 255, ${vis.opacity})`; intCtx.fillRect(vis.x, vis.y, vis.w, vis.h); }
+                if (vis.opacity <= 0) { 
+                    triggeredVisuals.splice(index, 1); 
+                } else { 
+                    // Se reemplaza fillRect por la función de dibujo de LEGO
+                    drawLegoBlock(intCtx, vis.x, vis.y, vis.w, vis.h, vis.hue, vis.opacity);
+                }
             });
+
             if (handLandmarker) {
                 const results = handLandmarker.detectForVideo(video, performance.now());
                 if (results.landmarks && results.landmarks.length > 0) {
@@ -81,7 +133,6 @@
                     const rowHeight = intCanvas.height / numRows;
                     const gridState = Array(numCols).fill(null).map(() => Array(numRows).fill(false));
 
-                    // --- CAMBIO 2: Se añade un bucle para procesar cada mano detectada ---
                     for (const landmarks of results.landmarks) {
                         for (const landmark of landmarks) {
                             const col = Math.floor(landmark.x * numCols);
@@ -91,12 +142,17 @@
                                     gridState[col][row] = true;
                                     const note = notes[row % notes.length];
                                     synth.triggerAttackRelease(note, "8n");
-                                    triggeredVisuals.push({ x: col * colWidth, y: row * rowHeight, w: colWidth, h: rowHeight, opacity: 1.0 });
+                                    
+                                    // --- CAMBIO 3: Asigna un color aleatorio al nuevo bloque ---
+                                    const hue = legoColors[Math.floor(Math.random() * legoColors.length)];
+                                    triggeredVisuals.push({ x: col * colWidth, y: row * rowHeight, w: colWidth, h: rowHeight, opacity: 1.0, hue: hue });
                                 }
                             }
                         }
-                        drawingUtils.drawConnectors(landmarks, HAND_CONNECTIONS, { color: 'rgba(255, 255, 255, 0.5)', lineWidth: 1 });
-                        drawingUtils.drawLandmarks(landmarks, { color: 'rgba(0, 255, 0, 0.7)', lineWidth: 1, radius: 2 });
+                        if (showTracking) {
+                            drawingUtils.drawConnectors(landmarks, HAND_CONNECTIONS, { color: 'rgba(255, 255, 255, 0.5)', lineWidth: 1 });
+                            drawingUtils.drawLandmarks(landmarks, { color: 'rgba(0, 255, 0, 0.7)', lineWidth: 1, radius: 2 });
+                        }
                     }
                 }
             }
