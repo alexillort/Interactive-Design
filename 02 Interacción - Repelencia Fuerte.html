@@ -2,9 +2,9 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Interacción - Repelencia Fuerte (Click para ver tracking)</title>
+    <title>Interacción - Repelencia Fuerte</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #000; cursor: pointer; } /* Añadido cursor: pointer para indicar que es clickeable */
+        body { margin: 0; overflow: hidden; background-color: #000; cursor: pointer; }
         canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); }
         #background-canvas { filter: grayscale(100%); z-index: 1; }
         #interaction-canvas { z-index: 2; }
@@ -32,21 +32,23 @@
         let particlesArray = [];
         let handLandmarksPoints = [];
         
-        // --- NUEVA VARIABLE DE ESTADO ---
-        // Esta variable controlará si se muestra o no el tracking de la mano.
         let showTracking = false;
 
         const INTERACTION_RADIUS = 120;
 
-        // --- MANEJADOR DE EVENTOS ---
-        // Función para alternar la visibilidad del tracking.
-        function toggleTrackingVisibility() {
-            showTracking = !showTracking; // Invierte el valor (true -> false, false -> true)
+        // --- MANEJADOR DE EVENTOS MODIFICADO ---
+        // Esta función ahora solo activa la visibilidad una vez y luego se desactiva a sí misma.
+        function activateTrackingVisibility() {
+            showTracking = true; // Cambia el estado a verdadero
+            
+            // Buena práctica: removemos los listeners para que no se ejecuten en futuros clics.
+            window.removeEventListener('click', activateTrackingVisibility);
+            window.removeEventListener('touchstart', activateTrackingVisibility);
         }
 
-        // Agregamos listeners para click (escritorio) y touchstart (móvil).
-        window.addEventListener('click', toggleTrackingVisibility);
-        window.addEventListener('touchstart', toggleTrackingVisibility);
+        // Agregamos listeners que se ejecutarán solo una vez.
+        window.addEventListener('click', activateTrackingVisibility);
+        window.addEventListener('touchstart', activateTrackingVisibility);
 
         class Particle {
             constructor() {
@@ -129,9 +131,7 @@
                             y: landmark.y * intCanvas.height
                         });
                     }
-
-                    // --- MODIFICACIÓN CLAVE ---
-                    // Solo dibuja los puntos y conectores si showTracking es verdadero.
+                    
                     if (showTracking) {
                         drawingUtils.drawConnectors(landmarks, HAND_CONNECTIONS, { color: '#FFFFFF', lineWidth: 2 });
                         drawingUtils.drawLandmarks(landmarks, { color: '#00FF00', lineWidth: 1, radius: 3 });
