@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Interacción - Repelencia Fuerte</title>
+    <title>Interacción - Tracking de Dos Manos</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; cursor: pointer; }
         canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); }
@@ -36,17 +36,12 @@
 
         const INTERACTION_RADIUS = 120;
 
-        // --- MANEJADOR DE EVENTOS MODIFICADO ---
-        // Esta función ahora solo activa la visibilidad una vez y luego se desactiva a sí misma.
         function activateTrackingVisibility() {
-            showTracking = true; // Cambia el estado a verdadero
-            
-            // Buena práctica: removemos los listeners para que no se ejecuten en futuros clics.
+            showTracking = true;
             window.removeEventListener('click', activateTrackingVisibility);
             window.removeEventListener('touchstart', activateTrackingVisibility);
         }
 
-        // Agregamos listeners que se ejecutarán solo una vez.
         window.addEventListener('click', activateTrackingVisibility);
         window.addEventListener('touchstart', activateTrackingVisibility);
 
@@ -93,7 +88,13 @@
         
         async function createHandLandmarker() {
             const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
-            handLandmarker = await HandLandmarker.createFromOptions(vision, { baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" }, runningMode: "VIDEO", numHands: 1 });
+            // --- CAMBIO 1: AUMENTAR EL NÚMERO DE MANOS ---
+            // Cambiamos numHands de 1 a 2 para detectar ambas manos.
+            handLandmarker = await HandLandmarker.createFromOptions(vision, { 
+                baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" }, 
+                runningMode: "VIDEO", 
+                numHands: 2 
+            });
             startCamera();
         }
         createHandLandmarker();
@@ -122,19 +123,25 @@
 
             if (handLandmarker) {
                 const results = handLandmarker.detectForVideo(video, performance.now());
-                handLandmarksPoints = [];
-                if (results.landmarks && results.landmarks.length > 0) {
-                    const landmarks = results.landmarks[0];
-                    for (const landmark of landmarks) {
-                        handLandmarksPoints.push({
-                            x: landmark.x * intCanvas.width,
-                            y: landmark.y * intCanvas.height
-                        });
-                    }
-                    
-                    if (showTracking) {
-                        drawingUtils.drawConnectors(landmarks, HAND_CONNECTIONS, { color: '#FFFFFF', lineWidth: 2 });
-                        drawingUtils.drawLandmarks(landmarks, { color: '#00FF00', lineWidth: 1, radius: 3 });
+                handLandmarksPoints = []; // Limpiamos los puntos en cada frame
+                
+                // --- CAMBIO 2: PROCESAR TODAS LAS MANOS DETECTADAS ---
+                // Usamos un bucle for...of para iterar sobre cada conjunto de landmarks (cada mano)
+                if (results.landmarks) {
+                    for (const landmarks of results.landmarks) {
+                        // Guardamos los puntos de esta mano para la interacción con partículas
+                        for (const landmark of landmarks) {
+                            handLandmarksPoints.push({
+                                x: landmark.x * intCanvas.width,
+                                y: landmark.y * intCanvas.height
+                            });
+                        }
+                        
+                        // Dibujamos el tracking solo si está activado
+                        if (showTracking) {
+                            drawingUtils.drawConnectors(landmarks, HAND_CONNECTIONS, { color: '#FFFFFF', lineWidth: 2 });
+                            drawingUtils.drawLandmarks(landmarks, { color: '#00FF00', lineWidth: 1, radius: 3 });
+                        }
                     }
                 }
             }
