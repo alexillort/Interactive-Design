@@ -2,22 +2,49 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Interacción - Repelencia Fuerte</title>
+    <title>Interacción - Tocar para ver Tracking</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #000; }
-        canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); }
-        #background-canvas { filter: grayscale(100%); z-index: 1; }
-        #interaction-canvas { z-index: 2; }
-        #input_video { display: none; } 
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background-color: #000; 
+            font-family: sans-serif;
+        }
+        canvas { 
+            position: absolute; 
+            top: 0; 
+            left: 0; 
+            transform: scaleX(-1); /* Espejo para que el movimiento sea natural */
+        }
+        #background-canvas { 
+            filter: grayscale(100%); 
+            z-index: 1; 
+        }
+        #interaction-canvas { 
+            z-index: 2; 
+        }
+        #input_video { 
+            display: none; 
+        } 
+        #info-text {
+            position: absolute;
+            bottom: 20px;
+            width: 100%;
+            text-align: center;
+            color: rgba(255, 255, 255, 0.7);
+            z-index: 10;
+            pointer-events: none; /* Para que no interfiera con el clic */
+        }
     </style>
 </head>
 <body>
     <video id="input_video" autoplay playsinline></video>
     <canvas id="background-canvas"></canvas>
     <canvas id="interaction-canvas"></canvas>
+    <p id="info-text">Toca la pantalla para ver/ocultar los puntos de tracking</p>
 
     <script type="module">
-        import { HandLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+        import { HandLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@medipe/tasks-vision@0.10.14";
 
         const HAND_CONNECTIONS = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [5, 9], [9, 10], [10, 11], [11, 12], [9, 13], [13, 14], [14, 15], [15, 16], [13, 17], [17, 18], [18, 19], [19, 20], [0, 17]];
 
@@ -32,9 +59,15 @@
         let particlesArray = [];
         let handLandmarksPoints = [];
         
-        // --- PARÁMETRO AJUSTADO ---
-        // Aumentamos el radio de 40 a 60 para un campo de fuerza más grande.
+        // --- NUEVA VARIABLE ---
+        // Controla si se deben mostrar los puntos de la mano. Inicia en falso.
+        let showLandmarks = false;
+
         const INTERACTION_RADIUS = 120;
+
+        // --- Event Listeners para alternar la visibilidad ---
+        window.addEventListener('click', () => { showLandmarks = !showLandmarks; });
+        window.addEventListener('touchstart', () => { showLandmarks = !showLandmarks; });
 
         class Particle {
             constructor() {
@@ -57,8 +90,6 @@
                         let forceDirectionY = dy / distance;
                         let force = (INTERACTION_RADIUS - distance) / INTERACTION_RADIUS;
                         
-                        // --- PARÁMETRO AJUSTADO ---
-                        // Aumentamos la fuerza de 2 a 5 para un empuje más potente.
                         this.x += forceDirectionX * force * 10;
                         this.y += forceDirectionY * force * 10;
                     }
@@ -78,7 +109,6 @@
             }
         }
 
-        // Aumenté el número de partículas para que el efecto sea más denso y notorio.
         function initParticles() { for (let i = 0; i < 2000; i++) { particlesArray.push(new Particle()); } }
         
         async function createHandLandmarker() {
@@ -121,14 +151,17 @@
                             y: landmark.y * intCanvas.height
                         });
                     }
-                    drawingUtils.drawConnectors(landmarks, HAND_CONNECTIONS, { color: '#FFFFFF', lineWidth: 2 });
-                    drawingUtils.drawLandmarks(landmarks, { color: '#00FF00', lineWidth: 1, radius: 3 });
+                    
+                    // --- AJUSTE PRINCIPAL ---
+                    // Solo dibuja los puntos y conectores si showLandmarks es verdadero.
+                    if (showLandmarks) {
+                        drawingUtils.drawConnectors(landmarks, HAND_CONNECTIONS, { color: '#FFFFFF', lineWidth: 2 });
+                        drawingUtils.drawLandmarks(landmarks, { color: '#00FF00', lineWidth: 1, radius: 3 });
+                    }
                 }
             }
             requestAnimationFrame(animate);
         }
     </script>
 </body>
-
 </html>
-
