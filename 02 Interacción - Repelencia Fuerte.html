@@ -2,99 +2,72 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Interacción - Tocar para ver Tracking (Corregido)</title>
+    <title>Interacción - Repelencia Fuerte (Click para ver tracking)</title>
     <style>
-        body { 
-            margin: 0; 
-            overflow: hidden; 
-            background-color: #000; 
-            font-family: sans-serif;
-            color: white;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-        }
-        canvas { 
-            position: absolute; 
-            /* Efecto espejo para que el movimiento se sienta natural */
-            transform: scaleX(-1); 
-        }
-        #background-canvas { 
-            /* Hacemos el video de fondo menos prominente */
-            filter: grayscale(100%) brightness(0.5); 
-            z-index: 1; 
-        }
-        #interaction-canvas { 
-            z-index: 2; 
-        }
-        #input_video { 
-            /* Ocultamos el elemento de video original */
-            display: none; 
-        }
-        #status-text {
-            position: absolute;
-            z-index: 10;
-            font-size: 1.2em;
-            padding: 1em;
-            background-color: rgba(0,0,0,0.5);
-            border-radius: 10px;
-            text-align: center;
-        }
+        body { margin: 0; overflow: hidden; background-color: #000; cursor: pointer; } /* Añadido cursor: pointer para indicar que es clickeable */
+        canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); }
+        #background-canvas { filter: grayscale(100%); z-index: 1; }
+        #interaction-canvas { z-index: 2; }
+        #input_video { display: none; } 
     </style>
 </head>
 <body>
-    <div id="status-text">Cargando modelo y cámara...</div>
-
     <video id="input_video" autoplay playsinline></video>
     <canvas id="background-canvas"></canvas>
     <canvas id="interaction-canvas"></canvas>
 
     <script type="module">
-        // --- CORRECCIÓN #1: URL DE IMPORTACIÓN CORRECTA ---
-        import { HandLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.js";
+        import { HandLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
 
-        // --- Variables Globales ---
+        const HAND_CONNECTIONS = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [5, 9], [9, 10], [10, 11], [11, 12], [9, 13], [13, 14], [14, 15], [15, 16], [13, 17], [17, 18], [18, 19], [19, 20], [0, 17]];
+
         const video = document.getElementById("input_video");
         const bgCanvas = document.getElementById("background-canvas");
         const bgCtx = bgCanvas.getContext("2d");
         const intCanvas = document.getElementById("interaction-canvas");
         const intCtx = intCanvas.getContext("2d");
-        const statusText = document.getElementById("status-text");
-
+        const drawingUtils = new DrawingUtils(intCtx);
+        
         let handLandmarker;
-        let drawingUtils;
         let particlesArray = [];
         let handLandmarksPoints = [];
         
-        // --- IMPLEMENTACIÓN #2: VARIABLE PARA CONTROLAR VISIBILIDAD ---
-        let showLandmarks = false; // Inicia oculto por defecto
-        
-        const INTERACTION_RADIUS = 120;
-        const PARTICLE_COUNT = 2000;
+        // --- NUEVA VARIABLE DE ESTADO ---
+        // Esta variable controlará si se muestra o no el tracking de la mano.
+        let showTracking = false;
 
-        // --- Clase para las Partículas (Mejorada) ---
+        const INTERACTION_RADIUS = 120;
+
+        // --- MANEJADOR DE EVENTOS ---
+        // Función para alternar la visibilidad del tracking.
+        function toggleTrackingVisibility() {
+            showTracking = !showTracking; // Invierte el valor (true -> false, false -> true)
+        }
+
+        // Agregamos listeners para click (escritorio) y touchstart (móvil).
+        window.addEventListener('click', toggleTrackingVisibility);
+        window.addEventListener('touchstart', toggleTrackingVisibility);
+
         class Particle {
-            constructor(canvas) {
-                this.canvas = canvas;
-                this.x = Math.random() * this.canvas.width;
-                this.y = Math.random() * this.canvas.height;
+            constructor() {
+                this.x = Math.random() * intCanvas.width;
+                this.y = Math.random() * intCanvas.height;
                 this.size = Math.random() * 5 + 1;
                 this.speedX = Math.random() * 2 - 1;
                 this.speedY = Math.random() * 2 - 1;
-                this.color = `hsl(${Math.floor(Math.random() * 360)}, 100%, 75%)`;
+                this.color = `hsl(${Math.random() * 360}, 100%, 75%)`;
             }
             
             update() {
                 handLandmarksPoints.forEach(point => {
-                    const dx = this.x - point.x;
-                    const dy = this.y - point.y;
-                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    let dx = this.x - point.x;
+                    let dy = this.y - point.y;
+                    let distance = Math.sqrt(dx * dx + dy * dy);
                     
                     if (distance < INTERACTION_RADIUS) {
-                        const forceDirectionX = dx / distance;
-                        const forceDirectionY = dy / distance;
-                        const force = (INTERACTION_RADIUS - distance) / INTERACTION_RADIUS;
+                        let forceDirectionX = dx / distance;
+                        let forceDirectionY = dy / distance;
+                        let force = (INTERACTION_RADIUS - distance) / INTERACTION_RADIUS;
                         this.x += forceDirectionX * force * 10;
                         this.y += forceDirectionY * force * 10;
                     }
@@ -102,9 +75,9 @@
 
                 this.x += this.speedX;
                 this.y += this.speedY;
-                if (this.x > this.canvas.width || this.x < 0) this.speedX *= -1;
-                if (this.y > this.canvas.height || this.y < 0) this.speedY *= -1;
-            }
+                if (this.x > intCanvas.width || this.x < 0) this.speedX *= -1;
+                if (this.y > intCanvas.height || this.y < 0) this.speedY *= -1;
+             }
 
             draw() {
                 intCtx.fillStyle = this.color;
@@ -114,96 +87,60 @@
             }
         }
 
-        // --- Función Principal de Ejecución (Más robusta) ---
-        async function main() {
-            try {
-                // 1. Cargar el modelo de IA
-                statusText.innerText = "Cargando modelo de IA...";
-                const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
-                handLandmarker = await HandLandmarker.createFromOptions(vision, {
-                    baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
-                    runningMode: "VIDEO", numHands: 1
-                });
-                drawingUtils = new DrawingUtils(intCtx);
-                
-                // 2. Iniciar la cámara
-                statusText.innerText = "Iniciando cámara...\nPor favor, acepta el permiso.";
-                const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
+        function initParticles() { for (let i = 0; i < 2000; i++) { particlesArray.push(new Particle()); } }
+        
+        async function createHandLandmarker() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, { baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" }, runningMode: "VIDEO", numHands: 1 });
+            startCamera();
+        }
+        createHandLandmarker();
+
+        function startCamera() {
+            navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
                 video.srcObject = stream;
-                
-                // 3. Esperar a que el video esté listo para reproducir
                 video.addEventListener("loadeddata", () => {
-                    setupCanvas();
+                    [bgCanvas, intCanvas].forEach(c => { c.width = video.videoWidth; c.height = video.videoHeight; });
+                    const scaleFactor = Math.min(window.innerWidth / video.videoWidth, window.innerHeight / video.videoHeight);
+                    const newWidth = video.videoWidth * scaleFactor;
+                    const newHeight = video.videoHeight * scaleFactor;
+                    const newLeft = (window.innerWidth - newWidth) / 2;
+                    const newTop = (window.innerHeight - newHeight) / 2;
+                    [bgCanvas, intCanvas].forEach(c => { c.style.width = `${newWidth}px`; c.style.height = `${newHeight}px`; c.style.left = `${newLeft}px`; c.style.top = `${newTop}px`; });
                     initParticles();
-                    statusText.innerHTML = "¡Listo! <br> Toca la pantalla para ver/ocultar los puntos.";
-                    setTimeout(() => statusText.style.display = 'none', 3000);
                     animate();
                 });
-
-            } catch (error) {
-                console.error("Error en la inicialización:", error);
-                statusText.innerText = `Error: ${error.message}. Revisa la consola y los permisos de la cámara.`;
-            }
+            });
         }
 
-        function setupCanvas() {
-            [bgCanvas, intCanvas].forEach(c => { c.width = video.videoWidth; c.height = video.videoHeight; });
-            resizeCanvas();
-        }
-
-        function initParticles() {
-            particlesArray = [];
-            for (let i = 0; i < PARTICLE_COUNT; i++) {
-                particlesArray.push(new Particle(intCanvas));
-            }
-        }
-        
-        function resizeCanvas() {
-            const aspectRatio = video.videoWidth / video.videoHeight;
-            let newWidth = window.innerWidth;
-            let newHeight = newWidth / aspectRatio;
-            if (newHeight > window.innerHeight) {
-                newHeight = window.innerHeight;
-                newWidth = newHeight * aspectRatio;
-            }
-            const left = (window.innerWidth - newWidth) / 2;
-            const top = (window.innerHeight - newHeight) / 2;
-            [bgCanvas, intCanvas].forEach(c => Object.assign(c.style, { width: `${newWidth}px`, height: `${newHeight}px`, left: `${left}px`, top: `${top}px` }));
-        }
-        
-        // --- Bucle de Animación ---
         function animate() {
             bgCtx.drawImage(video, 0, 0, bgCanvas.width, bgCanvas.height);
             intCtx.clearRect(0, 0, intCanvas.width, intCanvas.height);
+            particlesArray.forEach(p => { p.update(); p.draw(); });
 
-            const results = handLandmarker.detectForVideo(video, performance.now());
-            handLandmarksPoints = [];
-            if (results.landmarks && results.landmarks.length > 0) {
-                const landmarks = results.landmarks[0];
-                for (const landmark of landmarks) {
-                    handLandmarksPoints.push({ x: landmark.x * intCanvas.width, y: landmark.y * intCanvas.height });
-                }
-                
-                // --- IMPLEMENTACIÓN #3: DIBUJADO CONDICIONAL ---
-                // Solo dibuja los puntos si la variable 'showLandmarks' es verdadera
-                if (showLandmarks) {
-                    drawingUtils.drawConnectors(landmarks, HandLandmarker.HAND_CONNECTIONS, { color: '#FFFFFF', lineWidth: 2 });
-                    drawingUtils.drawLandmarks(landmarks, { color: '#00FF00', lineWidth: 1, radius: 3 });
+            if (handLandmarker) {
+                const results = handLandmarker.detectForVideo(video, performance.now());
+                handLandmarksPoints = [];
+                if (results.landmarks && results.landmarks.length > 0) {
+                    const landmarks = results.landmarks[0];
+                    for (const landmark of landmarks) {
+                        handLandmarksPoints.push({
+                            x: landmark.x * intCanvas.width,
+                            y: landmark.y * intCanvas.height
+                        });
+                    }
+
+                    // --- MODIFICACIÓN CLAVE ---
+                    // Solo dibuja los puntos y conectores si showTracking es verdadero.
+                    if (showTracking) {
+                        drawingUtils.drawConnectors(landmarks, HAND_CONNECTIONS, { color: '#FFFFFF', lineWidth: 2 });
+                        drawingUtils.drawLandmarks(landmarks, { color: '#00FF00', lineWidth: 1, radius: 3 });
+                    }
                 }
             }
-            
-            particlesArray.forEach(p => { p.update(); p.draw(); });
-            
             requestAnimationFrame(animate);
         }
-
-        // --- Eventos de Interacción ---
-        window.addEventListener('click', () => { showLandmarks = !showLandmarks; });
-        window.addEventListener('touchstart', (e) => { e.preventDefault(); showLandmarks = !showLandmarks; }, { passive: false });
-        window.addEventListener('resize', resizeCanvas);
-
-        // --- Iniciar la aplicación ---
-        main();
     </script>
 </body>
+
 </html>
