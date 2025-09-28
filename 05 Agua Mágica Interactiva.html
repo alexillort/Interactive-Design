@@ -2,9 +2,9 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Agua Mágica Interactiva</title>
+    <title>Agua Mágica</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #000; cursor: pointer; } /* Añadido cursor */
+        body { margin: 0; overflow: hidden; background-color: #000; cursor: pointer; }
         canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); }
         #background-canvas { z-index: 1; }
         #interaction-canvas { z-index: 2; }
@@ -31,12 +31,10 @@
         let handLandmarker;
         const FINGER_TIPS = [4, 8, 12, 16, 20];
         
-        // --- CAMBIO 1: Variable de estado y manejador de eventos para el clic ---
         let showTracking = false;
 
         function activateTrackingVisibility() {
-            showTracking = true; // Activa la visibilidad de forma permanente
-            // Se remueven los listeners para que solo se ejecute una vez
+            showTracking = true;
             window.removeEventListener('click', activateTrackingVisibility);
             window.removeEventListener('touchstart', activateTrackingVisibility);
         }
@@ -44,14 +42,17 @@
         window.addEventListener('touchstart', activateTrackingVisibility);
 
 
-        // --- SIMULACIÓN DE AGUA ---
         let cols, rows;
         let current, previous; 
         let dampening = 0.98;
 
         function initWaterSimulation() {
-            cols = Math.floor(bgCanvas.width / 8);
-            rows = Math.floor(bgCanvas.height / 8);
+            // --- CAMBIO CLAVE: AUMENTAR LA RESOLUCIÓN DE LA SIMULACIÓN ---
+            // Reducimos el divisor de 8 a 4 para más "pixels" en la simulación,
+            // lo que resulta en ondas más detalladas y menos pixeladas.
+            cols = Math.floor(bgCanvas.width / 4); // Antes: / 8
+            rows = Math.floor(bgCanvas.height / 4); // Antes: / 8
+            
             current = new Array(cols * rows).fill(0);
             previous = new Array(cols * rows).fill(0);
         }
@@ -60,7 +61,8 @@
             let simX = Math.floor(x / bgCanvas.width * cols);
             let simY = Math.floor(y / bgCanvas.height * rows);
             if (simX > 0 && simX < cols && simY > 0 && simY < rows) {
-                previous[simX + simY * cols] = 1024; 
+                // Aumentar un poco la fuerza del toque ya que la resolución es mayor
+                previous[simX + simY * cols] = 1200; // Antes: 1024
             }
         }
 
@@ -92,7 +94,6 @@
             bgCtx.drawImage(video, 0, 0, bgCanvas.width, bgCanvas.height);
             intCtx.clearRect(0, 0, intCanvas.width, intCanvas.height);
 
-            // --- LÓGICA DE LA SIMULACIÓN Y DISTORSIÓN (SIN CAMBIOS) ---
             for (let i = 1; i < cols - 1; i++) {
                 for (let j = 1; j < rows - 1; j++) {
                     current[i + j * cols] = ((previous[i - 1 + j * cols] + previous[i + 1 + j * cols] + previous[i + (j - 1) * cols] + previous[i + (j + 1) * cols]) / 2 - current[i + j * cols]) * dampening;
@@ -105,13 +106,18 @@
             const data = originalData.data;
             const dData = distortedData.data;
 
+            // El factor '8' aquí debe coincidir con el divisor en initWaterSimulation
+            const pixelationFactor = bgCanvas.width / cols; 
+
             for (let i = 0; i < cols; i++) {
                 for (let j = 0; j < rows; j++) {
                     const simX = i; const simY = j;
-                    const offsetX = Math.floor((current[(simX - 1) + simY * cols] - current[(simX + 1) + simY * cols]));
-                    const offsetY = Math.floor((current[simX + (simY - 1) * cols] - current[simX + (simY + 1) * cols]));
-                    for (let x = simX * 8; x < (simX + 1) * 8; x++) {
-                        for (let y = simY * 8; y < (simY + 1) * 8; y++) {
+                    // Los offsets ahora son más pequeños debido a la mayor resolución
+                    const offsetX = Math.floor((current[(simX - 1) + simY * cols] - current[(simX + 1) + simY * cols]) * 0.1); // Multiplicado por 0.1 para reducir la intensidad
+                    const offsetY = Math.floor((current[simX + (simY - 1) * cols] - current[simX + (simY + 1) * cols]) * 0.1); // Multiplicado por 0.1 para reducir la intensidad
+                    
+                    for (let x = simX * pixelationFactor; x < (simX + 1) * pixelationFactor; x++) {
+                        for (let y = simY * pixelationFactor; y < (simY + 1) * pixelationFactor; y++) {
                             const newX = x + offsetX; const newY = y + offsetY;
                             const oldIndex = (x + y * bgCanvas.width) * 4;
                             const newIndex = (newX + newY * bgCanvas.width) * 4;
@@ -124,19 +130,15 @@
             }
             bgCtx.putImageData(distortedData, 0, 0);
             
-            // --- LÓGICA DE DETECCIÓN DE MANOS ---
             if (handLandmarker) {
                 const results = handLandmarker.detectForVideo(video, performance.now());
                 if (results.landmarks && results.landmarks.length > 0) {
                     for (const landmarks of results.landmarks) {
-                        // La interacción con el agua siempre está activa
                         FINGER_TIPS.forEach(tipIndex => {
                             const point = landmarks[tipIndex];
                             disturbWater(point.x * bgCanvas.width, point.y * bgCanvas.height);
                         });
                         
-                        // --- CAMBIO 2: Condición para dibujar el tracking ---
-                        // El esqueleto y los puntos solo se dibujan si el usuario ha hecho clic
                         if (showTracking) {
                             drawingUtils.drawConnectors(landmarks, HAND_CONNECTIONS, { color: 'rgba(255, 255, 255, 0.5)', lineWidth: 1 });
                             drawingUtils.drawLandmarks(landmarks, { color: 'rgba(0, 255, 0, 0.7)', lineWidth: 1, radius: 2 });
