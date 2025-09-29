@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Arpegiador Interactivo</title>
+    <title>Arpegiador Interactivo (Corregido)</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; cursor: pointer; }
         #container { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; }
@@ -33,14 +33,10 @@
         import * as THREE from 'three';
         import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
 
-        const THUMB_TIP = 4;
-        const INDEX_TIP = 8;
-        const WRIST = 0;
-
-        // --- CAMBIO 1: Definir los puntos iniciales y una variable de estado ---
-        // Pulgar (1-4), Índice (5-8), Dedo Medio (9-12)
-        const INITIAL_VISIBLE_LANDMARKS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-        let showAllPoints = false; // Inicia en modo restringido
+        const WRIST = 0, THUMB_TIP = 4, INDEX_TIP = 8;
+        
+        const INITIAL_VISIBLE_LANDMARKS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let showAllPoints = false;
 
         let audioContext, oscillator, masterGain, audioInitialized = false;
         let handLandmarker, scene, camera, renderer, videoTexture, backgroundPlane;
@@ -57,7 +53,6 @@
             587.33, 659.25, 783.99, 880.00, 1046.50, 1174.66, 1318.51, 1567.98
         ];
         let baseNoteFrequency = scaleFrequencies[0];
-
         let volumeLine = null;
         let volumeMidPoint = null;
 
@@ -117,11 +112,8 @@
             }
         }
         
-        // --- CAMBIO 2: El clic ahora también activa la visibilidad total ---
         document.body.addEventListener('click', () => { 
-            if (!audioInitialized) {
-                setupWebAudio();
-            }
+            if (!audioInitialized) setupWebAudio();
             if (!showAllPoints) {
                 showAllPoints = true;
                 infoDiv.textContent = "Interactúa con tus manos";
@@ -214,45 +206,53 @@
             }
         }
 
-        function updateHandControls(landmarks) {
+        // --- FUNCIÓN CORREGIDA para usar la información de "handedness" ---
+        function updateHandControls(results) {
             let volume = 0;
             let speed = 250;
-            if (landmarks && landmarks.length > 0) {
-                const rightHand = landmarks.find(hand => hand[0].x < 0.5);
-                const leftHand = landmarks.find(hand => hand[0].x >= 0.5);
+            
+            let rightHand = null;
+            let leftHand = null;
 
-                if (rightHand) {
-                    const wristX = 1 - rightHand[0].x;
-                    const noteIndex = Math.floor(wristX * scaleFrequencies.length);
-                    baseNoteFrequency = scaleFrequencies[Math.max(0, Math.min(scaleFrequencies.length - 1, noteIndex))];
-                }
-
-                if (leftHand) {
-                    const wrist = leftHand[WRIST];
-                    speed = 300 - ((1 - wrist.y) * 250);
-                    
-                    const thumbTip = leftHand[THUMB_TIP];
-                    const indexTip = leftHand[INDEX_TIP];
-                    const distance = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y);
-                    const minPinch = 0.03, maxPinch = 0.20;
-                    volume = Math.max(0, Math.min(1, (distance - minPinch) / (maxPinch - minPinch))) * 0.7;
-
-                    if (volumeLine && volumeMidPoint) {
-                        const worldWidth = backgroundPlane.scale.x;
-                        const worldHeight = backgroundPlane.scale.y;
-                        const p1 = new THREE.Vector3((indexTip.x - 0.5) * worldWidth, -(indexTip.y - 0.5) * worldHeight, 0);
-                        const p2 = new THREE.Vector3((thumbTip.x - 0.5) * worldWidth, -(thumbTip.y - 0.5) * worldHeight, 0);
-                        volumeLine.geometry.setFromPoints([p1, p2]);
-                        volumeLine.visible = true;
-                        volumeLine.material.opacity = 0.3 + (volume * 0.7); 
-                        volumeMidPoint.position.set((p1.x + p2.x) / 2, (p1.y + p2.y) / 2, 0);
-                        volumeMidPoint.visible = true;
-                        volumeMidPoint.scale.setScalar((0.01 + (volume * 0.02)) / 0.01);
-                        volumeMidPoint.material.opacity = 0.5 + (volume * 0.5);
+            // Identificación robusta de manos
+            if (results.handedness && results.handedness.length > 0) {
+                results.handedness.forEach((hand, index) => {
+                    if (hand[0].categoryName === 'Right') {
+                        rightHand = results.landmarks[index];
+                    } else if (hand[0].categoryName === 'Left') {
+                        leftHand = results.landmarks[index];
                     }
-                } else {
-                    if (volumeLine) volumeLine.visible = false;
-                    if (volumeMidPoint) volumeMidPoint.visible = false;
+                });
+            }
+
+            if (rightHand) {
+                const wristX = 1 - rightHand[0].x;
+                const noteIndex = Math.floor(wristX * scaleFrequencies.length);
+                baseNoteFrequency = scaleFrequencies[Math.max(0, Math.min(scaleFrequencies.length - 1, noteIndex))];
+            }
+
+            if (leftHand) {
+                const wrist = leftHand[WRIST];
+                speed = 300 - ((1 - wrist.y) * 250);
+                
+                const thumbTip = leftHand[THUMB_TIP];
+                const indexTip = leftHand[INDEX_TIP];
+                const distance = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y);
+                const minPinch = 0.03, maxPinch = 0.20;
+                volume = Math.max(0, Math.min(1, (distance - minPinch) / (maxPinch - minPinch))) * 0.7;
+
+                if (volumeLine && volumeMidPoint) {
+                    const worldWidth = backgroundPlane.scale.x;
+                    const worldHeight = backgroundPlane.scale.y;
+                    const p1 = new THREE.Vector3((indexTip.x - 0.5) * worldWidth, -(indexTip.y - 0.5) * worldHeight, 0);
+                    const p2 = new THREE.Vector3((thumbTip.x - 0.5) * worldWidth, -(thumbTip.y - 0.5) * worldHeight, 0);
+                    volumeLine.geometry.setFromPoints([p1, p2]);
+                    volumeLine.visible = true;
+                    volumeLine.material.opacity = 0.3 + (volume * 0.7); 
+                    volumeMidPoint.position.set((p1.x + p2.x) / 2, (p1.y + p2.y) / 2, 0);
+                    volumeMidPoint.visible = true;
+                    volumeMidPoint.scale.setScalar((0.01 + (volume * 0.02)) / 0.01);
+                    volumeMidPoint.material.opacity = 0.5 + (volume * 0.5);
                 }
             } else {
                 if (volumeLine) volumeLine.visible = false;
@@ -266,18 +266,24 @@
             }
         }
         
-        function updateHandPoints(landmarks) {
-            if (!backgroundPlane) return;
-            const worldWidth = backgroundPlane.scale.x;
-            const worldHeight = backgroundPlane.scale.y;
+        // --- FUNCIÓN CORREGIDA para usar la información de "handedness" ---
+        function updateHandPoints(results) {
+            if (!backgroundPlane || !results.landmarks) return;
+            
+            const landmarks = results.landmarks;
+            const handedness = results.handedness;
 
             landmarks.forEach((handLandmarks, handIndex) => {
                 const handGroup = handPointGroups[handIndex];
                 while(handGroup.children.length) handGroup.remove(handGroup.children[0]);
                 
+                const handType = handedness[handIndex] && handedness[handIndex][0] ? handedness[handIndex][0].categoryName : null;
+                if (!handType) return; // Si no se puede determinar la mano, no dibujar
+
+                const worldWidth = backgroundPlane.scale.x;
+                const worldHeight = backgroundPlane.scale.y;
+
                 for (let i = 0; i < handLandmarks.length; i++) {
-                    // --- CAMBIO 3: Condición para dibujar el punto ---
-                    // Se dibuja si: showAllPoints es true O si el índice está en la lista inicial
                     if (showAllPoints || INITIAL_VISIBLE_LANDMARKS.includes(i)) {
                         const landmark = handLandmarks[i];
                         const x = (landmark.x - 0.5) * worldWidth;
@@ -287,16 +293,15 @@
                         let pointSize = 0.01;
                         let pointColor = 0x99ccff;
 
-                        const isRightHand = handLandmarks[0].x < 0.5;
-
-                        // Se simplifica la lógica de colores
-                        if (isRightHand && i === WRIST) {
+                        if (handType === 'Right' && (i === THUMB_TIP || i === INDEX_TIP)) {
+                             pointSize = 0.025; pointColor = 0x00ff00;
+                        } else if (handType === 'Left' && (i === THUMB_TIP || i === INDEX_TIP)) {
+                            pointSize = 0.025; pointColor = 0x00ff00;
+                        } else if (handType === 'Right' && i === WRIST) {
                             pointSize = 0.03;
                             const noteNormalized = scaleFrequencies.indexOf(baseNoteFrequency) / (scaleFrequencies.length -1);
                             pointColor = new THREE.Color().setHSL(noteNormalized * 0.3 + 0.6, 1.0, 0.7).getHex();
-                        } else if (!isRightHand && (i === THUMB_TIP || i === INDEX_TIP)) {
-                            pointSize = 0.025; pointColor = 0x00ff00;
-                        } else if (!isRightHand && i === WRIST) {
+                        } else if (handType === 'Left' && i === WRIST) { 
                             pointSize = 0.03;
                             const speedNormalized = 1 - ((arpeggioSpeed - 50) / 250);
                             pointColor = new THREE.Color().setHSL(0.6 - (speedNormalized * 0.6), 1.0, 0.7).getHex();
@@ -311,7 +316,8 @@
                 }
             });
             for (let i = landmarks.length; i < 2; i++) {
-                handPointGroups[i].children.length = 0;
+                const handGroup = handPointGroups[i];
+                while(handGroup.children.length > 0) handGroup.remove(handGroup.children[0]);
             }
         }
         
@@ -319,8 +325,9 @@
             requestAnimationFrame(animate);
             if (handLandmarker && video.readyState >= 4) {
                 const results = handLandmarker.detectForVideo(video, performance.now());
-                updateHandControls(results.landmarks);
-                updateHandPoints(results.landmarks);
+                // Pasamos el objeto "results" completo a las funciones
+                updateHandControls(results);
+                updateHandPoints(results);
             }
             scene.scale.x = -1;
             renderer.render(scene, camera);
