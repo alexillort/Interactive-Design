@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <title>Simbionte de Tinta Viviente</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #000; }
+        body { margin: 0; overflow: hidden; background-color: #000; cursor: pointer; } /* Añadido cursor */
         #main-canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); }
         #input_video { display: none; }
     </style>
@@ -21,17 +21,30 @@
         const ctx = canvas.getContext("2d");
 
         let handLandmarker;
-        let tendrils = []; // Almacenará nuestros tentáculos
+        let tendrils = [];
 
-        // --- CONFIGURACIÓN DE LA FÍSICA Y VISUALES ---
-        const NUM_POINTS = 20; // Puntos por tentáculo (más puntos = más suave pero más pesado)
-        const STICK_LENGTH = 15; // Distancia entre puntos del tentáculo
+        // --- CAMBIO 1: Variable de estado para controlar la visibilidad de los puntos ---
+        let showFingerTips = false;
+
+        const NUM_POINTS = 20;
+        const STICK_LENGTH = 15;
         const GRAVITY = 0.5;
-        const DAMPING = 0.90; // Fricción / Resistencia del aire
-        const TENSION = 0.5; // Rigidez de los tentáculos
-        const FINGER_TIPS = [4, 8, 12, 16, 20]; // Yemas de los dedos
+        const DAMPING = 0.90;
+        const TENSION = 0.5;
+        const FINGER_TIPS = [4, 8, 12, 16, 20];
 
-        // --- CLASES PARA EL MOTOR DE FÍSICA ---
+        // --- CAMBIO 2: Función para activar la visibilidad una sola vez ---
+        function activateTrackingVisibility() {
+            showFingerTips = true;
+            window.removeEventListener('click', activateTrackingVisibility);
+            window.removeEventListener('touchstart', activateTrackingVisibility);
+            document.body.style.cursor = 'default';
+        }
+        window.addEventListener('click', activateTrackingVisibility);
+        window.addEventListener('touchstart', activateTrackingVisibility);
+
+
+        // --- CLASES PARA EL MOTOR DE FÍSICA (Sin cambios) ---
         class Point {
             constructor(x, y) {
                 this.x = x; this.y = y;
@@ -44,7 +57,7 @@
                 let vy = (this.y - this.oldY) * DAMPING;
                 this.oldX = this.x; this.oldY = this.y;
                 this.x += vx; this.y += vy;
-                this.y += GRAVITY; // Aplicar gravedad
+                this.y += GRAVITY;
             }
         }
 
@@ -68,10 +81,8 @@
 
         class Tendril {
             constructor(x, y) {
-                this.points = [];
-                this.sticks = [];
+                this.points = []; this.sticks = [];
                 this.targetLength = NUM_POINTS;
-
                 for (let i = 0; i < NUM_POINTS; i++) {
                     this.points.push(new Point(x, y + i * STICK_LENGTH));
                 }
@@ -80,15 +91,10 @@
                 }
                 this.points[0].isPinned = true;
             }
-
             update(handState) {
-                // Controlar longitud del tentáculo con el gesto de la mano
                 this.targetLength = handState.isFist ? 5 : NUM_POINTS;
-
-                // Añadir/quitar puntos dinámicamente para encoger/alargar
                 while (this.points.length > this.targetLength && this.points.length > 2) {
-                    this.points.pop();
-                    this.sticks.pop();
+                    this.points.pop(); this.sticks.pop();
                 }
                 while (this.points.length < this.targetLength) {
                     const lastPoint = this.points[this.points.length - 1];
@@ -96,17 +102,13 @@
                     this.points.push(newPoint);
                     this.sticks.push(new Stick(lastPoint, newPoint, STICK_LENGTH));
                 }
-
                 this.points[0].x = handState.x;
                 this.points[0].y = handState.y;
-
                 this.points.forEach(p => p.update());
-                // Múltiples iteraciones de las restricciones para mayor estabilidad
                 for (let i = 0; i < 5; i++) {
                     this.sticks.forEach(s => s.update());
                 }
             }
-            
             draw() {
                 ctx.beginPath();
                 ctx.moveTo(this.points[0].x, this.points[0].y);
@@ -114,7 +116,6 @@
                     const xc = (this.points[i].x + this.points[i + 1].x) / 2;
                     const yc = (this.points[i].y + this.points[i + 1].y) / 2;
                     ctx.quadraticCurveTo(this.points[i].x, this.points[i].y, xc, yc);
-                    // El grosor disminuye a lo largo del tentáculo
                     ctx.lineWidth = (1 - i / this.points.length) * 15;
                 }
                 ctx.lineCap = 'round';
@@ -145,7 +146,6 @@
         }
 
         function animate() {
-            // Fondo: cámara desaturada
             ctx.globalCompositeOperation = 'source-over';
             ctx.filter = 'saturate(0.3) brightness(0.8)';
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -156,15 +156,12 @@
 
             if (results?.landmarks) {
                 for (const landmarks of results.landmarks) {
-                    const wrist = landmarks[0];
                     const palm = landmarks[9];
-                    // Detección de puño: si la distancia promedio de los dedos a la palma es corta
                     let avgDist = 0;
                     FINGER_TIPS.forEach(i => {
                         avgDist += Math.hypot(landmarks[i].x - palm.x, landmarks[i].y - palm.y);
                     });
                     const isFist = (avgDist / FINGER_TIPS.length) < 0.1;
-
                     FINGER_TIPS.forEach(tipIndex => {
                         const tip = landmarks[tipIndex];
                         currentTips.push({ x: tip.x * canvas.width, y: tip.y * canvas.height, isFist });
@@ -172,7 +169,6 @@
                 }
             }
 
-            // Actualizar o crear tentáculos para las puntas de los dedos visibles
             for (let i = 0; i < currentTips.length; i++) {
                 if (!tendrils[i]) {
                     tendrils[i] = new Tendril(currentTips[i].x, currentTips[i].y);
@@ -180,8 +176,21 @@
                 tendrils[i].update(currentTips[i]);
                 tendrils[i].draw();
             }
-            // Eliminar tentáculos si hay menos manos/dedos
             tendrils.splice(currentTips.length);
+
+            // --- CAMBIO 3: Dibuja los puntos de las yemas si está activado ---
+            if (showFingerTips) {
+                currentTips.forEach(tip => {
+                    ctx.beginPath();
+                    ctx.arc(tip.x, tip.y, 8, 0, Math.PI * 2); // Círculo de 8px de radio
+                    ctx.fillStyle = 'rgba(255, 0, 100, 0.85)'; // Color magenta brillante
+                    ctx.shadowColor = 'rgba(255, 0, 100, 1)';
+                    ctx.shadowBlur = 15;
+                    ctx.fill();
+                });
+                // Restablecer sombra para evitar que afecte a otros dibujos
+                ctx.shadowBlur = 0;
+            }
 
             requestAnimationFrame(animate);
         }
