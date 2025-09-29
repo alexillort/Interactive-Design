@@ -2,11 +2,10 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Efecto Líquido con p5.js (Corregido)</title>
+    <title>Aura Mágica con p5.js</title>
     <style>
         body { margin: 0; overflow: hidden; }
-        /* Centramos el contenedor principal */
-        main { display: flex; justify-content: center; align-items: center; height: 100vh; background-color: #000; }
+        main { display: flex; justify-content: center; align-items: center; height: 100vh; background-color: #000; cursor: pointer; }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
 </head>
@@ -37,19 +36,29 @@
 
         const sketch = (p) => {
             let video;
-            let gooeyLayer;
+            let auraLayer;
+            // --- CAMBIO 1: Variable para controlar la visibilidad de los puntos ---
+            let showTrackingPoints = false;
 
             p.setup = () => {
-                // p5.js ahora encontrará el contenedor <main id="main">
                 p.createCanvas(1280, 720).parent('main');
                 video = p.createCapture(p.VIDEO);
                 video.size(p.width, p.height);
                 video.hide();
 
-                gooeyLayer = p.createGraphics(p.width, p.height);
+                auraLayer = p.createGraphics(p.width, p.height);
+                // Usamos HSB para controlar el color fácilmente (Tono, Saturación, Brillo)
+                auraLayer.colorMode(p.HSB, 360, 100, 100); 
+            };
+            
+            // --- CAMBIO 2: Función para manejar el clic ---
+            p.mousePressed = () => {
+                // Alterna la visibilidad de los puntos con cada clic
+                showTrackingPoints = !showTrackingPoints;
             };
 
             p.draw = () => {
+                // 1. Detecta las manos en el video
                 if (video.elt.readyState === 4 && handLandmarker) {
                     if (video.elt.currentTime !== lastVideoTime) {
                         lastVideoTime = video.elt.currentTime;
@@ -57,33 +66,58 @@
                     }
                 }
                 
+                // 2. Dibuja el video espejado como fondo
                 p.push();
                 p.translate(p.width, 0);
                 p.scale(-1, 1);
                 p.image(video, 0, 0, p.width, p.height);
                 p.pop();
 
-                gooeyLayer.clear();
-                gooeyLayer.noStroke();
-                gooeyLayer.fill(255, 255, 255);
+                // 3. Dibuja el "Aura Mágica" en una capa separada
+                auraLayer.clear();
+                auraLayer.noStroke();
                 
                 if (detections && detections.landmarks) {
                     for (const landmarks of detections.landmarks) {
+                        // --- CAMBIO 3: Efecto de Aura Colorida ---
+                        // El tono del color cambia con el tiempo para un efecto de arcoíris
+                        const hue = (p.frameCount * 0.5) % 360; 
+
                         for (const point of landmarks) {
-                            gooeyLayer.ellipse(point.x * p.width, point.y * p.height, 80, 80);
+                            // Dibuja círculos de colores en la capa del aura
+                            auraLayer.fill(hue, 90, 80); // Color principal del aura
+                            auraLayer.ellipse(point.x * p.width, point.y * p.height, 80, 80);
                         }
                     }
                 }
 
-                gooeyLayer.filter(p.BLUR, 25);
-                gooeyLayer.filter(p.THRESHOLD, 0.3);
+                // Aplica los filtros para crear el efecto "líquido" y cohesivo
+                auraLayer.filter(p.BLUR, 30);
+                auraLayer.filter(p.THRESHOLD, 0.2);
 
+                // 4. Dibuja la capa del aura sobre el video con un modo de fusión "screen"
                 p.push();
                 p.translate(p.width, 0);
                 p.scale(-1, 1);
-                p.drawingContext.globalCompositeOperation = 'screen';
-                p.image(gooeyLayer, 0, 0);
+                p.drawingContext.globalCompositeOperation = 'screen'; // Hace que lo negro sea transparente
+                p.image(auraLayer, 0, 0);
+                p.drawingContext.globalCompositeOperation = 'source-over'; // Restaura el modo normal
                 p.pop();
+
+                // --- CAMBIO 4: Dibuja los puntos de tracking si están activados ---
+                if (showTrackingPoints && detections && detections.landmarks) {
+                    p.push();
+                    p.translate(p.width, 0);
+                    p.scale(-1, 1);
+                    for (const landmarks of detections.landmarks) {
+                        for (const point of landmarks) {
+                            p.fill(255); // Puntos blancos
+                            p.noStroke();
+                            p.ellipse(point.x * p.width, point.y * p.height, 10, 10);
+                        }
+                    }
+                    p.pop();
+                }
             };
         };
     </script>
