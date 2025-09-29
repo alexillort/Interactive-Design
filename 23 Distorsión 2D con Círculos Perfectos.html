@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <title>Distorsión 2D con Círculos Perfectos</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #000; }
+        body { margin: 0; overflow: hidden; background-color: #000; cursor: pointer; } /* Añadido cursor */
         #container { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; }
         #input_video { display: none; }
     </style>
@@ -37,6 +37,9 @@
         const MAX_RIPPLES = 10;
         const RIPPLE_DECAY_RATE = 0.03;
         let handPointGroups = [];
+        
+        // --- CAMBIO 1: Variable de estado para controlar la visibilidad de los puntos ---
+        let showPoints = false;
 
         const customUniforms = {
             u_videoTexture: { value: null },
@@ -45,6 +48,16 @@
             u_ripples: { value: Array(MAX_RIPPLES).fill(new THREE.Vector4(0, 0, 0, 0)) },
             u_numRipples: { value: 0 }
         };
+
+        // --- CAMBIO 2: Función para activar los puntos con un solo clic ---
+        function activatePoints() {
+            showPoints = true;
+            window.removeEventListener('click', activatePoints);
+            window.removeEventListener('touchstart', activatePoints);
+            document.body.style.cursor = 'default';
+        }
+        window.addEventListener('click', activatePoints);
+        window.addEventListener('touchstart', activatePoints);
 
         async function setupMediapipe() {
             const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
@@ -98,7 +111,6 @@
                     varying vec2 vUv;
                     void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
                 `,
-                // --- SHADER CORREGIDO ---
                 fragmentShader: `
                     uniform sampler2D u_videoTexture;
                     uniform vec2 u_resolution;
@@ -110,8 +122,6 @@
                     void main() {
                         vec2 uv = vUv;
                         vec2 distortedUv = uv;
-
-                        // Calcular la relación de aspecto una sola vez
                         float aspectRatio = u_resolution.x / u_resolution.y;
                         vec2 aspectCorrection = vec2(aspectRatio, 1.0);
 
@@ -119,24 +129,18 @@
                             vec2 ripplePos = u_ripples[i].xy;
                             float radius = u_ripples[i].z;
                             float intensity = u_ripples[i].w;
-
-                            // Calcular la distancia corrigiendo la relación de aspecto
-                            // Se multiplica el vector de diferencia por el vector de corrección
                             vec2 diff = uv - ripplePos;
                             diff *= aspectCorrection;
                             float dist = length(diff);
 
                             if (dist < radius) {
-                                // La dirección de la onda debe estar en el espacio UV original
                                 vec2 direction = normalize(uv - ripplePos);
                                 float wave = cos((dist - radius) * 25.0) * (radius - dist);
-                                
-                                // Corregir la dirección de la distorsión para que no se estire
                                 direction /= aspectCorrection;
-                                
                                 distortedUv += direction * wave * 0.1 * intensity;
                             }
                         }
+                        // La textura del video ya tiene color, por lo que el resultado será en color.
                         gl_FragColor = texture2D(u_videoTexture, distortedUv);
                     }
                 `,
@@ -195,12 +199,12 @@
         function updateRipples(landmarks) {
             const newFingerTipPositions = new Map();
             if (landmarks && landmarks.length > 0) {
-                landmarks.forEach(handLandmarks => {
+                landmarks.forEach((handLandmarks, handIdx) => {
                     FINGER_TIPS.forEach(tipIndex => {
                         const landmark = handLandmarks[tipIndex];
                         const x = landmark.x;
                         const y = 1.0 - landmark.y;
-                        const fingerId = `${handLandmarks === landmarks[0] ? 'L' : 'R'}_${tipIndex}`;
+                        const fingerId = `${handIdx}_${tipIndex}`;
                         newFingerTipPositions.set(fingerId, new THREE.Vector2(x, y));
                         if (lastFingerTipPositions.has(fingerId)) {
                             const lastPos = lastFingerTipPositions.get(fingerId);
@@ -252,8 +256,9 @@
                 });
             });
             
+            // Limpia los puntos de las manos que no se detectan
             for (let i = landmarks.length; i < 2; i++) {
-                handPointGroups[i].children.length = 0;
+                 while(handPointGroups[i].children.length) handPointGroups[i].remove(handPointGroups[i].children[0]);
             }
         }
 
@@ -264,7 +269,16 @@
             if (handLandmarker && video.readyState >= 4) {
                 const results = handLandmarker.detectForVideo(video, performance.now());
                 updateRipples(results.landmarks);
-                updateHandPoints(results.landmarks);
+
+                // --- CAMBIO 3: Llamada condicional para dibujar los puntos ---
+                if (showPoints) {
+                    updateHandPoints(results.landmarks);
+                } else {
+                    // Si no se deben mostrar, nos aseguramos de que los grupos estén vacíos
+                    handPointGroups.forEach(group => {
+                         while(group.children.length) group.remove(group.children[0]);
+                    });
+                }
             }
             
             scene.scale.x = -1;
