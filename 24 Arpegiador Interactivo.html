@@ -33,10 +33,14 @@
         import * as THREE from 'three';
         import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
 
-        // Puntas de los dedos y muñeca: Pulgar(4), Índice(8), Muñeca(0)
         const THUMB_TIP = 4;
         const INDEX_TIP = 8;
-        const WRIST = 0; // Punto de la muñeca
+        const WRIST = 0;
+
+        // --- CAMBIO 1: Definir los puntos iniciales y una variable de estado ---
+        // Pulgar (1-4), Índice (5-8), Dedo Medio (9-12)
+        const INITIAL_VISIBLE_LANDMARKS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let showAllPoints = false; // Inicia en modo restringido
 
         let audioContext, oscillator, masterGain, audioInitialized = false;
         let handLandmarker, scene, camera, renderer, videoTexture, backgroundPlane;
@@ -54,7 +58,6 @@
         ];
         let baseNoteFrequency = scaleFrequencies[0];
 
-        // --- (NUEVO) Línea y punto medio para el volumen ---
         let volumeLine = null;
         let volumeMidPoint = null;
 
@@ -79,7 +82,7 @@
             masterGain.gain.setValueAtTime(0, audioContext.currentTime);
             oscillator.start();
             audioInitialized = true;
-            infoDiv.textContent = "Haz clic e interactúa con tus manos";
+            infoDiv.textContent = "Haz clic para mostrar todos los puntos";
             startArpeggiator();
         }
 
@@ -89,21 +92,16 @@
                 masterGain.gain.setValueAtTime(0, audioContext.currentTime);
                 return;
             };
-
-            const pattern = [0, 2, 4, 1]; // Tónica, Tercera Mayor, Quinta Perfecta, Octava (para un arpegio más completo)
+            const pattern = [0, 2, 4, 7]; 
             const scaleIndex = scaleFrequencies.indexOf(baseNoteFrequency);
-            if (scaleIndex === -1) return; // Si la baseNoteFrequency no está en la escala, salir
-            
-            // Asegurarse de que el índice no exceda el tamaño del patrón o de la escala
+            if (scaleIndex === -1) return;
             const noteIndexInPattern = pattern[currentNoteIndex % pattern.length];
             const actualScaleIndex = (scaleIndex + noteIndexInPattern) % scaleFrequencies.length; 
             const freq = scaleFrequencies[actualScaleIndex];
-
             oscillator.frequency.setValueAtTime(freq, audioContext.currentTime);
             masterGain.gain.cancelScheduledValues(audioContext.currentTime);
             masterGain.gain.setValueAtTime(masterGain.gain.value, audioContext.currentTime);
             masterGain.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + (arpeggioSpeed / 1000) * 0.9);
-
             currentNoteIndex++;
         }
 
@@ -119,7 +117,16 @@
             }
         }
         
-        document.body.addEventListener('click', () => { if (!audioInitialized) setupWebAudio(); });
+        // --- CAMBIO 2: El clic ahora también activa la visibilidad total ---
+        document.body.addEventListener('click', () => { 
+            if (!audioInitialized) {
+                setupWebAudio();
+            }
+            if (!showAllPoints) {
+                showAllPoints = true;
+                infoDiv.textContent = "Interactúa con tus manos";
+            }
+        });
 
         async function setupMediapipe() {
             const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
@@ -166,7 +173,6 @@
                 handPointGroups.push(group);
             }
 
-            // --- (NUEVO) Inicializar la línea de volumen y el punto medio ---
             const lineGeometry = new THREE.BufferGeometry();
             const lineMaterial = new THREE.LineBasicMaterial({ color: 0x00ff00, linewidth: 2, transparent: true, opacity: 0.7 });
             volumeLine = new THREE.Line(lineGeometry, lineMaterial);
@@ -176,7 +182,7 @@
             const midPointMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.9 });
             volumeMidPoint = new THREE.Mesh(midPointGeometry, midPointMaterial);
             scene.add(volumeMidPoint);
-            volumeMidPoint.visible = false; // Ocultar al inicio
+            volumeMidPoint.visible = false;
 
             window.addEventListener('resize', onWindowResize);
             onWindowResize();
@@ -211,7 +217,6 @@
         function updateHandControls(landmarks) {
             let volume = 0;
             let speed = 250;
-
             if (landmarks && landmarks.length > 0) {
                 const rightHand = landmarks.find(hand => hand[0].x < 0.5);
                 const leftHand = landmarks.find(hand => hand[0].x >= 0.5);
@@ -219,66 +224,37 @@
                 if (rightHand) {
                     const wristX = 1 - rightHand[0].x;
                     const noteIndex = Math.floor(wristX * scaleFrequencies.length);
-                    const clampedIndex = Math.max(0, Math.min(scaleFrequencies.length - 1, noteIndex));
-                    baseNoteFrequency = scaleFrequencies[clampedIndex];
+                    baseNoteFrequency = scaleFrequencies[Math.max(0, Math.min(scaleFrequencies.length - 1, noteIndex))];
                 }
 
                 if (leftHand) {
-                    // --- Control de velocidad con la altura (Y) de la muñeca izquierda ---
                     const wrist = leftHand[WRIST];
-                    const wristY = 1 - wrist.y; // Altura de la muñeca
-                    speed = 300 - (wristY * 250); // Rango de 50ms (rápido) a 300ms (lento)
+                    speed = 300 - ((1 - wrist.y) * 250);
                     
                     const thumbTip = leftHand[THUMB_TIP];
                     const indexTip = leftHand[INDEX_TIP];
-
-                    // Calcular distancia 2D para el volumen
                     const distance = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y);
+                    const minPinch = 0.03, maxPinch = 0.20;
+                    volume = Math.max(0, Math.min(1, (distance - minPinch) / (maxPinch - minPinch))) * 0.7;
 
-                    const minPinch = 0.03;
-                    const maxPinch = 0.20;
-                    const rawVolume = (distance - minPinch) / (maxPinch - minPinch);
-                    volume = Math.max(0, Math.min(1, rawVolume)) * 0.7; // Volumen máximo ajustado a 70%
-
-                    // --- (NUEVO) Actualizar la línea de volumen y el punto medio ---
                     if (volumeLine && volumeMidPoint) {
                         const worldWidth = backgroundPlane.scale.x;
                         const worldHeight = backgroundPlane.scale.y;
-
-                        const p1 = new THREE.Vector3(
-                            (indexTip.x - 0.5) * worldWidth,
-                            -(indexTip.y - 0.5) * worldHeight,
-                            0
-                        );
-                        const p2 = new THREE.Vector3(
-                            (thumbTip.x - 0.5) * worldWidth,
-                            -(thumbTip.y - 0.5) * worldHeight,
-                            0
-                        );
+                        const p1 = new THREE.Vector3((indexTip.x - 0.5) * worldWidth, -(indexTip.y - 0.5) * worldHeight, 0);
+                        const p2 = new THREE.Vector3((thumbTip.x - 0.5) * worldWidth, -(thumbTip.y - 0.5) * worldHeight, 0);
                         volumeLine.geometry.setFromPoints([p1, p2]);
                         volumeLine.visible = true;
-
-                        // Opacidad de la línea según el volumen
                         volumeLine.material.opacity = 0.3 + (volume * 0.7); 
-                        
-                        // Posición del punto medio
-                        const midX = (p1.x + p2.x) / 2;
-                        const midY = (p1.y + p2.y) / 2;
-                        volumeMidPoint.position.set(midX, midY, 0);
+                        volumeMidPoint.position.set((p1.x + p2.x) / 2, (p1.y + p2.y) / 2, 0);
                         volumeMidPoint.visible = true;
-
-                        // Tamaño y color del punto medio según el volumen
-                        const midPointSize = 0.01 + (volume * 0.02);
-                        volumeMidPoint.scale.setScalar(midPointSize / 0.01); // Escalar en relación al tamaño base
+                        volumeMidPoint.scale.setScalar((0.01 + (volume * 0.02)) / 0.01);
                         volumeMidPoint.material.opacity = 0.5 + (volume * 0.5);
                     }
                 } else {
-                    // Si no se detecta la mano izquierda, ocultar la línea y el punto medio
                     if (volumeLine) volumeLine.visible = false;
                     if (volumeMidPoint) volumeMidPoint.visible = false;
                 }
             } else {
-                // Si no se detecta ninguna mano, asegurarse de que estén ocultos
                 if (volumeLine) volumeLine.visible = false;
                 if (volumeMidPoint) volumeMidPoint.visible = false;
             }
@@ -299,38 +275,39 @@
                 const handGroup = handPointGroups[handIndex];
                 while(handGroup.children.length) handGroup.remove(handGroup.children[0]);
                 
-                // Iterar sobre todos los puntos, no solo las puntas de los dedos
                 for (let i = 0; i < handLandmarks.length; i++) {
-                    const landmark = handLandmarks[i];
-                    const x = (landmark.x - 0.5) * worldWidth;
-                    const y = -(landmark.y - 0.5) * worldHeight;
-                    const z = 0;
+                    // --- CAMBIO 3: Condición para dibujar el punto ---
+                    // Se dibuja si: showAllPoints es true O si el índice está en la lista inicial
+                    if (showAllPoints || INITIAL_VISIBLE_LANDMARKS.includes(i)) {
+                        const landmark = handLandmarks[i];
+                        const x = (landmark.x - 0.5) * worldWidth;
+                        const y = -(landmark.y - 0.5) * worldHeight;
+                        const z = 0;
 
-                    let pointSize = 0.01; // Tamaño base para la mayoría de los puntos
-                    let pointColor = 0x99ccff; // Color base
+                        let pointSize = 0.01;
+                        let pointColor = 0x99ccff;
 
-                    // --- (NUEVO) Agrandar y colorear puntos principales ---
-                    if (handIndex === 0 && i === THUMB_TIP) { // Pulgar mano derecha (Nota)
-                        pointSize = 0.03;
-                        pointColor = 0xffaaff; // Magenta claro
-                    } else if (handIndex === 1 && i === THUMB_TIP) { // Pulgar mano izquierda (Volumen)
-                        pointSize = 0.025;
-                        pointColor = 0x00ff00; // Verde
-                    } else if (handIndex === 1 && i === INDEX_TIP) { // Índice mano izquierda (Volumen)
-                        pointSize = 0.025;
-                        pointColor = 0x00ff00; // Verde
-                    } else if (handIndex === 1 && i === WRIST) { // Muñeca mano izquierda (Ritmo)
-                        pointSize = 0.03;
-                        // Color de la muñeca según la velocidad (azul lento -> rojo rápido)
-                        const speedNormalized = 1 - ((arpeggioSpeed - 50) / 250); // 0 (lento) a 1 (rápido)
-                        pointColor = new THREE.Color().setHSL(0.6 - (speedNormalized * 0.6), 1.0, 0.7).getHex();
+                        const isRightHand = handLandmarks[0].x < 0.5;
+
+                        // Se simplifica la lógica de colores
+                        if (isRightHand && i === WRIST) {
+                            pointSize = 0.03;
+                            const noteNormalized = scaleFrequencies.indexOf(baseNoteFrequency) / (scaleFrequencies.length -1);
+                            pointColor = new THREE.Color().setHSL(noteNormalized * 0.3 + 0.6, 1.0, 0.7).getHex();
+                        } else if (!isRightHand && (i === THUMB_TIP || i === INDEX_TIP)) {
+                            pointSize = 0.025; pointColor = 0x00ff00;
+                        } else if (!isRightHand && i === WRIST) {
+                            pointSize = 0.03;
+                            const speedNormalized = 1 - ((arpeggioSpeed - 50) / 250);
+                            pointColor = new THREE.Color().setHSL(0.6 - (speedNormalized * 0.6), 1.0, 0.7).getHex();
+                        }
+                        
+                        const geometry = new THREE.SphereGeometry(pointSize, 16, 16);
+                        const material = new THREE.MeshBasicMaterial({ color: pointColor, transparent: true, opacity: 0.8 });
+                        const pointMesh = new THREE.Mesh(geometry, material);
+                        pointMesh.position.set(x, y, z);
+                        handGroup.add(pointMesh);
                     }
-
-                    const geometry = new THREE.SphereGeometry(pointSize, 16, 16);
-                    const material = new THREE.MeshBasicMaterial({ color: pointColor, transparent: true, opacity: 0.8 });
-                    const pointMesh = new THREE.Mesh(geometry, material);
-                    pointMesh.position.set(x, y, z);
-                    handGroup.add(pointMesh);
                 }
             });
             for (let i = landmarks.length; i < 2; i++) {
