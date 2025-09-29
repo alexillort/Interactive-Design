@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Lienzo de Partículas Interactivo</title>
+    <title>Lienzo de Partículas</title>
     <style>
         body {
             margin: 0;
@@ -12,15 +12,16 @@
             justify-content: center;
             align-items: center;
             height: 100vh;
+            cursor: pointer; /* Indica que se puede hacer clic */
         }
         #particle-canvas {
-            transform: scaleX(-1); /* Efecto espejo para que coincida con tu movimiento */
+            transform: scaleX(-1); /* Efecto espejo */
             position: absolute;
             top: 0;
             left: 0;
         }
         #input_video {
-            display: none; /* El video está oculto, solo lo usamos para la detección */
+            display: none;
         }
     </style>
 </head>
@@ -29,7 +30,8 @@
     <canvas id="particle-canvas"></canvas>
 
     <script type="module">
-        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+        // --- CAMBIO 1: Se importa DrawingUtils para dibujar los puntos ---
+        import { HandLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr/npm/@mediapipe/tasks-vision@0.10.14";
 
         const video = document.getElementById("input_video");
         const canvas = document.getElementById("particle-canvas");
@@ -37,15 +39,28 @@
 
         let handLandmarker;
         let particles = [];
+        
+        // --- CAMBIO 2: Se instancia DrawingUtils y se añade la variable de estado ---
+        const drawingUtils = new DrawingUtils(ctx);
+        let showTrackingPoints = false; // Por defecto, no se muestran los puntos
 
-        // --- CONFIGURACIÓN DEL EFECTO ---
-        const PARTICLE_COUNT = 300; // ¿Cuántas partículas quieres?
-        const REPULSION_RADIUS = 100; // Radio de influencia de la mano (en píxeles)
-        const REPULSION_STRENGTH = 5; // Fuerza con la que la mano empuja las partículas
-        const MAX_CONNECTION_DIST = 90; // Distancia máxima para conectar partículas
-        const PARTICLE_SPEED = 1; // Velocidad base de las partículas
+        const PARTICLE_COUNT = 300;
+        const REPULSION_RADIUS = 100;
+        const REPULSION_STRENGTH = 5;
+        const MAX_CONNECTION_DIST = 90;
+        const PARTICLE_SPEED = 1;
 
-        // Función para inicializar MediaPipe
+        // --- CAMBIO 3: Función para activar la visibilidad una sola vez ---
+        function activateTrackingVisibility() {
+            showTrackingPoints = true;
+            // Se remueven los listeners para que no se ejecute de nuevo
+            window.removeEventListener('click', activateTrackingVisibility);
+            window.removeEventListener('touchstart', activateTrackingVisibility);
+            document.body.style.cursor = 'default'; // Se restaura el cursor
+        }
+        window.addEventListener('click', activateTrackingVisibility);
+        window.addEventListener('touchstart', activateTrackingVisibility);
+
         async function createHandLandmarker() {
             const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
             handLandmarker = await HandLandmarker.createFromOptions(vision, {
@@ -57,7 +72,6 @@
         }
         createHandLandmarker();
 
-        // Inicia la cámara y la detección
         function startCamera() {
             navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
                 video.srcObject = stream;
@@ -70,27 +84,19 @@
             }).catch(err => console.error("ERROR: No se pudo acceder a la cámara.", err));
         }
 
-        // Clase para definir una partícula
         class Particle {
             constructor(x, y, color) {
-                this.x = x;
-                this.y = y;
+                this.x = x; this.y = y;
                 this.size = Math.random() * 3 + 1;
                 this.vx = (Math.random() - 0.5) * PARTICLE_SPEED;
                 this.vy = (Math.random() - 0.5) * PARTICLE_SPEED;
                 this.color = color;
             }
-
-            // Actualiza la posición y maneja los bordes
             update() {
-                this.x += this.vx;
-                this.y += this.vy;
-
+                this.x += this.vx; this.y += this.vy;
                 if (this.x < 0 || this.x > canvas.width) this.vx *= -1;
                 if (this.y < 0 || this.y > canvas.height) this.vy *= -1;
             }
-
-            // Dibuja la partícula en el canvas
             draw() {
                 ctx.fillStyle = this.color;
                 ctx.beginPath();
@@ -99,9 +105,8 @@
             }
         }
         
-        // Crea el enjambre inicial de partículas
         function createParticles() {
-             const colors = ['#00ff99', '#ff00ff', '#00ffff', '#ffff00'];
+            const colors = ['#00ff99', '#ff00ff', '#00ffff', '#ffff00'];
             for (let i = 0; i < PARTICLE_COUNT; i++) {
                 particles.push(new Particle(
                     Math.random() * canvas.width,
@@ -111,7 +116,6 @@
             }
         }
         
-        // Dibuja las líneas de "constelación" entre partículas cercanas
         function connectParticles() {
             for (let a = 0; a < particles.length; a++) {
                 for (let b = a; b < particles.length; b++) {
@@ -132,30 +136,32 @@
             }
         }
         
-        // El bucle principal de animación
         function animate() {
-            // Fondo semitransparente para crear el efecto de estela
             ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-            let handLandmarks = [];
+            let handPixelLandmarks = [];
             if (handLandmarker && video.readyState >= 2) {
                 const results = handLandmarker.detectForVideo(video, performance.now());
                 if (results.landmarks) {
                     for (const landmarks of results.landmarks) {
-                        // Convierte las coordenadas normalizadas a píxeles del canvas
                         const pixelLandmarks = landmarks.map(lm => ({
                             x: lm.x * canvas.width,
                             y: lm.y * canvas.height
                         }));
-                        handLandmarks.push(...pixelLandmarks);
+                        handPixelLandmarks.push(...pixelLandmarks);
+
+                        // --- CAMBIO 4: Dibuja los puntos y conexiones si está activado ---
+                        if (showTrackingPoints) {
+                            drawingUtils.drawConnectors(landmarks, HandLandmarker.HAND_CONNECTIONS, { color: '#FFFFFF', lineWidth: 2 });
+                            drawingUtils.drawLandmarks(landmarks, { color: '#00FF99', radius: 4 });
+                        }
                     }
                 }
             }
 
             particles.forEach(p => {
-                // Interacción con las manos
-                handLandmarks.forEach(lm => {
+                handPixelLandmarks.forEach(lm => {
                     const dx = p.x - lm.x;
                     const dy = p.y - lm.y;
                     const distance = Math.hypot(dx, dy);
@@ -168,7 +174,6 @@
                     }
                 });
                 
-                // Amortiguación para que no aceleren infinitamente
                 p.vx *= 0.96;
                 p.vy *= 0.96;
 
