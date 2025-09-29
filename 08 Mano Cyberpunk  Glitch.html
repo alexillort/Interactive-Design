@@ -2,9 +2,9 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Mano Cyberpunk / Glitch</title>
+    <title>Mano Cyberpunk / Glitch Dinámico</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #000; }
+        body { margin: 0; overflow: hidden; background-color: #000; cursor: pointer; } /* Añadido cursor para indicar clic */
         canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); }
         #background-canvas { z-index: 1; }
         #interaction-canvas { z-index: 2; }
@@ -30,8 +30,34 @@
         
         let handLandmarker;
 
-        // --- Función para calcular la silueta de la mano (Convex Hull) ---
-        // (Algoritmo simple de Monotone Chain para encontrar la silueta)
+        // --- CAMBIO 1: Variable para activar los puntos una sola vez y manejador de eventos ---
+        let showTrackingPoints = false;
+
+        function activateTrackingVisibility() {
+            showTrackingPoints = true;
+            // Remover los listeners para que solo se active una vez
+            window.removeEventListener('click', activateTrackingVisibility);
+            window.removeEventListener('touchstart', activateTrackingVisibility);
+            document.body.style.cursor = 'default'; // Opcional: cambiar el cursor de nuevo
+        }
+        window.addEventListener('click', activateTrackingVisibility);
+        window.addEventListener('touchstart', activateTrackingVisibility);
+
+
+        // --- CAMBIO 2: Colores para el efecto Glitch (Rojo y Azul) ---
+        // Usamos HSLA para controlar el tono y la opacidad.
+        // Hue 0 = Rojo, Hue 240 = Azul
+        const glitchColors = [
+            'hsla(0, 100%, 60%, 0.2)',  // Rojo
+            'hsla(240, 100%, 60%, 0.2)' // Azul
+        ];
+        const pointColors = [
+            'rgba(255, 0, 0, 0.8)', // Rojo más sólido para puntos
+            'rgba(0, 0, 255, 0.8)'  // Azul más sólido para puntos
+        ];
+
+
+        // Función para calcular la silueta de la mano (Convex Hull)
         function getHandHull(points) {
             points.sort((a, b) => a.x - b.x || a.y - b.y);
             const lower = [];
@@ -85,6 +111,11 @@
             bgCtx.drawImage(video, 0, 0, bgCanvas.width, bgCanvas.height);
             intCtx.clearRect(0, 0, intCanvas.width, intCanvas.height);
 
+            // --- CAMBIO 3: Selecciona el color actual basado en el tiempo ---
+            const colorIndex = Math.floor(performance.now() / 200) % glitchColors.length; // Cambia cada 200ms
+            const currentColor = glitchColors[colorIndex];
+            const currentPointColor = pointColors[colorIndex];
+
             if (handLandmarker) {
                 const results = handLandmarker.detectForVideo(video, performance.now());
                 if (results.landmarks && results.landmarks.length > 0) {
@@ -100,27 +131,28 @@
                             intCtx.lineTo(hull[i].x, hull[i].y);
                         }
                         intCtx.closePath();
-                        intCtx.clip(); // <-- ¡Aquí se crea la máscara!
+                        intCtx.clip();
 
                         // 2. Dibuja el efecto Glitch dentro de la máscara
                         for (let i = 0; i < 50; i++) {
                             const y = Math.random() * intCanvas.height;
-                            const h = Math.random() * 20 + 1; // Altura de la franja
-                            const xOffset = (Math.random() - 0.5) * 40; // Desplazamiento horizontal
+                            const h = Math.random() * 20 + 1;
+                            const xOffset = (Math.random() - 0.5) * 40;
 
-                            // Dibuja una franja del video original, pero desplazada
                             intCtx.drawImage(bgCanvas, 0, y, intCanvas.width, h, xOffset, y, intCanvas.width, h);
                         }
 
-                        // 3. Aplica un tinte de color cyberpunk
-                        intCtx.fillStyle = 'rgba(0, 255, 100, 0.2)';
+                        // 3. Aplica un tinte de color glitch
+                        intCtx.fillStyle = currentColor; // Usa el color que cambia
                         intCtx.fillRect(0, 0, intCanvas.width, intCanvas.height);
                         
-                        intCtx.restore(); // <-- Se elimina la máscara para lo siguiente
+                        intCtx.restore();
 
-                        // 4. Dibuja el esqueleto de la mano sobre el efecto
-                        drawingUtils.drawConnectors(landmarks, HAND_CONNECTIONS, { color: 'rgba(0, 255, 100, 0.6)', lineWidth: 2 });
-                        drawingUtils.drawLandmarks(landmarks, { color: 'rgba(255, 255, 255, 0.8)', radius: 3 });
+                        // --- CAMBIO 4: Dibuja el esqueleto y los puntos solo si 'showTrackingPoints' es true ---
+                        if (showTrackingPoints) {
+                            drawingUtils.drawConnectors(landmarks, HAND_CONNECTIONS, { color: currentPointColor, lineWidth: 2 }); // Color que cambia
+                            drawingUtils.drawLandmarks(landmarks, { color: 'rgba(255, 255, 255, 0.8)', radius: 3, fillColor: currentPointColor }); // Puntos blancos con color de relleno que cambia
+                        }
                     }
                 }
             }
