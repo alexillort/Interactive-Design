@@ -2,21 +2,16 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Arpegiador Interactivo (Corregido)</title>
+    <title>Arpegiador Interactivo</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; cursor: pointer; }
         #container { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; }
         #input_video { display: none; }
         #info {
-            position: absolute;
-            top: 20px;
-            left: 20px;
-            width: calc(100% - 40px);
-            color: white;
-            font-family: monospace;
-            font-size: 24px;
-            text-shadow: 2px 2px 4px #000;
-            z-index: 100;
+            position: absolute; top: 20px; left: 20px;
+            width: calc(100% - 40px); color: white;
+            font-family: monospace; font-size: 24px;
+            text-shadow: 2px 2px 4px #000; z-index: 100;
             pointer-events: none;
         }
     </style>
@@ -35,7 +30,8 @@
 
         const WRIST = 0, THUMB_TIP = 4, INDEX_TIP = 8;
         
-        const INITIAL_VISIBLE_LANDMARKS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        // --- CAMBIO 1: Puntos visibles al inicio (solo yemas de pulgar e índice) ---
+        const INITIAL_VISIBLE_LANDMARKS = [THUMB_TIP, INDEX_TIP];
         let showAllPoints = false;
 
         let audioContext, oscillator, masterGain, audioInitialized = false;
@@ -45,16 +41,13 @@
         const container = document.getElementById("container");
         const infoDiv = document.getElementById("info");
 
-        let arpeggiatorInterval;
-        let currentNoteIndex = 0;
-        let arpeggioSpeed = 150;
+        let arpeggiatorInterval, currentNoteIndex = 0, arpeggioSpeed = 150;
         const scaleFrequencies = [
             220.00, 261.63, 293.66, 329.63, 392.00, 440.00, 523.25, 
             587.33, 659.25, 783.99, 880.00, 1046.50, 1174.66, 1318.51, 1567.98
         ];
         let baseNoteFrequency = scaleFrequencies[0];
-        let volumeLine = null;
-        let volumeMidPoint = null;
+        let volumeLine = null, volumeMidPoint = null;
 
         function setupWebAudio() {
             audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -77,7 +70,7 @@
             masterGain.gain.setValueAtTime(0, audioContext.currentTime);
             oscillator.start();
             audioInitialized = true;
-            infoDiv.textContent = "Haz clic para mostrar todos los puntos";
+            infoDiv.textContent = "Haz clic para mostrar la mano completa";
             startArpeggiator();
         }
 
@@ -206,46 +199,34 @@
             }
         }
 
-        // --- FUNCIÓN CORREGIDA para usar la información de "handedness" ---
         function updateHandControls(results) {
-            let volume = 0;
-            let speed = 250;
-            
-            let rightHand = null;
-            let leftHand = null;
+            let volume = 0, speed = 250;
+            let rightHand = null, leftHand = null;
 
-            // Identificación robusta de manos
-            if (results.handedness && results.handedness.length > 0) {
+            if (results.handedness?.length > 0) {
                 results.handedness.forEach((hand, index) => {
-                    if (hand[0].categoryName === 'Right') {
-                        rightHand = results.landmarks[index];
-                    } else if (hand[0].categoryName === 'Left') {
-                        leftHand = results.landmarks[index];
-                    }
+                    if (hand[0].categoryName === 'Right') rightHand = results.landmarks[index];
+                    else if (hand[0].categoryName === 'Left') leftHand = results.landmarks[index];
                 });
             }
 
             if (rightHand) {
-                const wristX = 1 - rightHand[0].x;
+                const wristX = 1 - rightHand[WRIST].x;
                 const noteIndex = Math.floor(wristX * scaleFrequencies.length);
                 baseNoteFrequency = scaleFrequencies[Math.max(0, Math.min(scaleFrequencies.length - 1, noteIndex))];
             }
 
             if (leftHand) {
-                const wrist = leftHand[WRIST];
-                speed = 300 - ((1 - wrist.y) * 250);
-                
-                const thumbTip = leftHand[THUMB_TIP];
-                const indexTip = leftHand[INDEX_TIP];
-                const distance = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y);
+                speed = 300 - ((1 - leftHand[WRIST].y) * 250);
+                const distance = Math.hypot(leftHand[THUMB_TIP].x - leftHand[INDEX_TIP].x, leftHand[THUMB_TIP].y - leftHand[INDEX_TIP].y);
                 const minPinch = 0.03, maxPinch = 0.20;
                 volume = Math.max(0, Math.min(1, (distance - minPinch) / (maxPinch - minPinch))) * 0.7;
 
                 if (volumeLine && volumeMidPoint) {
                     const worldWidth = backgroundPlane.scale.x;
                     const worldHeight = backgroundPlane.scale.y;
-                    const p1 = new THREE.Vector3((indexTip.x - 0.5) * worldWidth, -(indexTip.y - 0.5) * worldHeight, 0);
-                    const p2 = new THREE.Vector3((thumbTip.x - 0.5) * worldWidth, -(thumbTip.y - 0.5) * worldHeight, 0);
+                    const p1 = new THREE.Vector3((leftHand[INDEX_TIP].x - 0.5) * worldWidth, -(leftHand[INDEX_TIP].y - 0.5) * worldHeight, 0);
+                    const p2 = new THREE.Vector3((leftHand[THUMB_TIP].x - 0.5) * worldWidth, -(leftHand[THUMB_TIP].y - 0.5) * worldHeight, 0);
                     volumeLine.geometry.setFromPoints([p1, p2]);
                     volumeLine.visible = true;
                     volumeLine.material.opacity = 0.3 + (volume * 0.7); 
@@ -262,11 +243,10 @@
             if (audioInitialized) {
                 masterGain.gain.linearRampToValueAtTime(volume, audioContext.currentTime + 0.05);
                 updateArpeggiatorSpeed(speed);
-                infoDiv.textContent = `Nota: ${baseNoteFrequency.toFixed(0)} Hz | Ritmo: ${((300 - speed)/250*100).toFixed(0)}% | Vol: ${(volume / 0.7 * 100).toFixed(0)}%`;
+                infoDiv.textContent = `Nota: ${baseNoteFrequency.toFixed(0)}Hz | Ritmo: ${((300-speed)/250*100).toFixed(0)}% | Vol: ${(volume/0.7*100).toFixed(0)}%`;
             }
         }
         
-        // --- FUNCIÓN CORREGIDA para usar la información de "handedness" ---
         function updateHandPoints(results) {
             if (!backgroundPlane || !results.landmarks) return;
             
@@ -277,8 +257,8 @@
                 const handGroup = handPointGroups[handIndex];
                 while(handGroup.children.length) handGroup.remove(handGroup.children[0]);
                 
-                const handType = handedness[handIndex] && handedness[handIndex][0] ? handedness[handIndex][0].categoryName : null;
-                if (!handType) return; // Si no se puede determinar la mano, no dibujar
+                const handType = handedness[handIndex]?.[0]?.categoryName;
+                if (!handType) return;
 
                 const worldWidth = backgroundPlane.scale.x;
                 const worldHeight = backgroundPlane.scale.y;
@@ -293,15 +273,20 @@
                         let pointSize = 0.01;
                         let pointColor = 0x99ccff;
 
-                        if (handType === 'Right' && (i === THUMB_TIP || i === INDEX_TIP)) {
-                             pointSize = 0.025; pointColor = 0x00ff00;
-                        } else if (handType === 'Left' && (i === THUMB_TIP || i === INDEX_TIP)) {
-                            pointSize = 0.025; pointColor = 0x00ff00;
-                        } else if (handType === 'Right' && i === WRIST) {
+                        // --- CAMBIO 2: Lógica de colores y tamaños ajustada ---
+                        // Pulgar e Índice de AMBAS manos serán verdes y del mismo tamaño
+                        if (i === THUMB_TIP || i === INDEX_TIP) {
+                            pointSize = 0.025; 
+                            pointColor = 0x00ff00;
+                        } 
+                        // Muñeca de la mano DERECHA (control de nota)
+                        else if (handType === 'Right' && i === WRIST) { 
                             pointSize = 0.03;
                             const noteNormalized = scaleFrequencies.indexOf(baseNoteFrequency) / (scaleFrequencies.length -1);
                             pointColor = new THREE.Color().setHSL(noteNormalized * 0.3 + 0.6, 1.0, 0.7).getHex();
-                        } else if (handType === 'Left' && i === WRIST) { 
+                        } 
+                        // Muñeca de la mano IZQUIERDA (control de ritmo)
+                        else if (handType === 'Left' && i === WRIST) { 
                             pointSize = 0.03;
                             const speedNormalized = 1 - ((arpeggioSpeed - 50) / 250);
                             pointColor = new THREE.Color().setHSL(0.6 - (speedNormalized * 0.6), 1.0, 0.7).getHex();
@@ -314,6 +299,24 @@
                         handGroup.add(pointMesh);
                     }
                 }
+
+                // --- Lógica para dibujar las líneas ---
+                // (Se ha eliminado la creación de la variable 'connections' ya que no se usa en el estado inicial)
+                if (showAllPoints) {
+                    const connections = HandLandmarker.HAND_CONNECTIONS;
+                    connections.forEach(connection => {
+                        const p1 = handLandmarks[connection.start];
+                        const p2 = handLandmarks[connection.end];
+                        const linePoints = [
+                            new THREE.Vector3((p1.x - 0.5) * worldWidth, -(p1.y - 0.5) * worldHeight, 0),
+                            new THREE.Vector3((p2.x - 0.5) * worldWidth, -(p2.y - 0.5) * worldHeight, 0)
+                        ];
+                        const lineGeometry = new THREE.BufferGeometry().setFromPoints(linePoints);
+                        const lineMaterial = new THREE.LineBasicMaterial({ color: 0xcccccc, linewidth: 2, transparent: true, opacity: 0.4 });
+                        const line = new THREE.Line(lineGeometry, lineMaterial);
+                        handGroup.add(line);
+                    });
+                }
             });
             for (let i = landmarks.length; i < 2; i++) {
                 const handGroup = handPointGroups[i];
@@ -325,7 +328,6 @@
             requestAnimationFrame(animate);
             if (handLandmarker && video.readyState >= 4) {
                 const results = handLandmarker.detectForVideo(video, performance.now());
-                // Pasamos el objeto "results" completo a las funciones
                 updateHandControls(results);
                 updateHandPoints(results);
             }
