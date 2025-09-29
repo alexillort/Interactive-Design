@@ -49,7 +49,6 @@
             { position: new THREE.Vector3(0,0,-1000), density: 0 }
         ];
         
-        // --- CAMBIO 1: Variables para los punteros y su visibilidad ---
         let handMarkers = [];
         let showPointers = false;
 
@@ -77,40 +76,26 @@
             float random(vec3 p) { return fract(sin(dot(p.xyz, vec3(12.9898, 78.233, 151.7182))) * 43758.5453); }
             float noise(vec3 p) {
                 vec3 i = floor(p); vec3 f = fract(p); f = f * f * (3.0 - 2.0 * f);
-                float a = random(i + vec3(0.,0.,0.)); float b = random(i + vec3(1.,0.,0.));
-                float c = random(i + vec3(0.,1.,0.)); float d = random(i + vec3(1.,1.,0.));
-                float e = random(i + vec3(0.,0.,1.)); float f_ = random(i + vec3(1.,0.,1.));
-                float g = random(i + vec3(0.,1.,1.)); float h = random(i + vec3(1.,1.,1.));
-                return mix(mix(mix(a, b, f.x), mix(c, d, f.x), f.y),
-                           mix(mix(e, f_, f.x), mix(g, h, f.x), f.y), f.z);
+                float a=random(i+vec3(0,0,0)), b=random(i+vec3(1,0,0)), c=random(i+vec3(0,1,0)), d=random(i+vec3(1,1,0)),
+                      e=random(i+vec3(0,0,1)), f_=random(i+vec3(1,0,1)), g=random(i+vec3(0,1,1)), h=random(i+vec3(1,1,1));
+                return mix(mix(mix(a, b, f.x), mix(c, d, f.x), f.y), mix(mix(e, f_, f.x), mix(g, h, f.x), f.y), f.z);
             }
             
             void main() {
-                float baseNoise = 0.0;
-                baseNoise += noise(vWorldPosition * 0.01 + time * 0.05) * 1.0;
-                baseNoise += noise(vWorldPosition * 0.03 + time * 0.1) * 0.5;
-                baseNoise += noise(vWorldPosition * 0.06) * 0.25;
-                baseNoise /= 1.75;
-                float alpha = baseNoise * 0.15;
-                vec3 color = vec3(0.0);
-
+                float baseNoise = (noise(vWorldPosition*0.01+time*0.05)*1.0 + noise(vWorldPosition*0.03+time*0.1)*0.5 + noise(vWorldPosition*0.06)*0.25) / 1.75;
+                float alpha = baseNoise * 0.15; vec3 color = vec3(0.0);
                 float dist1 = distance(vWorldPosition, hand1Pos);
                 if (dist1 < interactionRadius) {
-                    float influence1 = 1.0 - dist1 / interactionRadius;
-                    alpha += influence1 * hand1Density * 0.5;
-                    color += vec3(0.0, 0.5, 1.0) * influence1 * hand1Density * 2.0;
+                    float influence = 1.0 - dist1/interactionRadius; alpha += influence * hand1Density * 0.5; color += vec3(0.0, 0.5, 1.0) * influence * hand1Density * 2.0;
                 }
                 float dist2 = distance(vWorldPosition, hand2Pos);
                 if (dist2 < interactionRadius) {
-                    float influence2 = 1.0 - dist2 / interactionRadius;
-                    alpha += influence2 * hand2Density * 0.5;
-                    color += vec3(1.0, 0.3, 0.0) * influence2 * hand2Density * 2.0;
+                    float influence = 1.0 - dist2/interactionRadius; alpha += influence * hand2Density * 0.5; color += vec3(1.0, 0.3, 0.0) * influence * hand2Density * 2.0;
                 }
                 gl_FragColor = vec4(color, alpha);
             }
         `;
         
-        // --- CAMBIO 2: Función para activar la visibilidad de los punteros ---
         function activatePointers() {
             showPointers = true;
             window.removeEventListener('click', activatePointers);
@@ -133,7 +118,7 @@
 
             clock = new THREE.Clock();
 
-            const fogGeometry = new THREE.PlaneGeometry(FOG_RADIUS * 3, FOG_RADIUS * 3, 1, 1);
+            const fogGeometry = new THREE.PlaneGeometry(FOG_RADIUS * 3, FOG_RADIUS * 3);
             for (let i = 0; i < NUM_FOG_LAYERS; i++) {
                 const material = new THREE.ShaderMaterial({
                     uniforms: {
@@ -147,16 +132,19 @@
                 });
                 const mesh = new THREE.Mesh(fogGeometry, material);
                 mesh.position.z = (i / NUM_FOG_LAYERS - 0.5) * FOG_RADIUS * 2;
-                fogMeshes.push(mesh);
                 scene.add(mesh);
+                fogMeshes.push(mesh);
             }
             
-            // --- CAMBIO 3: Crear los objetos 3D para los punteros ---
-            const markerGeometry = new THREE.SphereGeometry(3, 16, 16); // Esferas de radio 3
-            const markerMaterial = new THREE.MeshBasicMaterial({ color: 0x00ffaa, toneMapped: false });
-            for(let i=0; i<2; i++) {
-                const marker = new THREE.Mesh(markerGeometry, markerMaterial);
-                marker.visible = false; // Inician invisibles
+            // --- CAMBIO 1: Crear 4 punteros (2 por mano) con colores distintos ---
+            const markerGeometry = new THREE.SphereGeometry(3, 16, 16);
+            const thumbMaterial = new THREE.MeshBasicMaterial({ color: 0xff00aa, toneMapped: false }); // Magenta para pulgar
+            const indexMaterial = new THREE.MeshBasicMaterial({ color: 0x00aaff, toneMapped: false }); // Cian para índice
+
+            for(let i=0; i<4; i++) {
+                // Alternamos el material para cada dedo
+                const marker = new THREE.Mesh(markerGeometry, i % 2 === 0 ? thumbMaterial : indexMaterial);
+                marker.visible = false;
                 scene.add(marker);
                 handMarkers.push(marker);
             }
@@ -170,7 +158,6 @@
             renderer.setSize(window.innerWidth, window.innerHeight);
         }
 
-        // --- CAMBIO 4: Función mejorada para alinear la mano con el mundo 3D ---
         function mapHandTo3DWorld(point, targetZ) {
             const vFOV = THREE.MathUtils.degToRad(camera.fov);
             const visibleHeight = 2 * Math.tan(vFOV / 2) * Math.abs(targetZ - camera.position.z);
@@ -185,35 +172,42 @@
             const elapsedTime = clock.getElapsedTime();
             const results = handLandmarker?.detectForVideo(video, performance.now());
             
-            // Resetear posiciones y visibilidad
             handInteractions.forEach(hand => { hand.position.z = -1000; hand.density = 0; });
             handMarkers.forEach(marker => marker.visible = false);
 
             if (results?.landmarks) {
-                results.landmarks.forEach((landmarks, index) => {
+                results.landmarks.forEach((landmarks, handIndex) => {
+                    // La interacción con la niebla sigue dependiendo de la palma
                     const palm = landmarks[9];
+                    const worldPalmPosition = mapHandTo3DWorld(palm, 0);
+                    handInteractions[handIndex].position.copy(worldPalmPosition);
+
                     const thumbTip = landmarks[4];
                     const indexTip = landmarks[8];
                     const pinchDist = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y);
                     const density = THREE.MathUtils.mapLinear(pinchDist, MAX_PINCH_DIST, MIN_PINCH_DIST, 0.0, 1.0);
+                    handInteractions[handIndex].density = THREE.MathUtils.clamp(density, 0.0, 1.0);
                     
-                    // Se usa la función mejorada para calcular la posición
-                    const worldPosition = mapHandTo3DWorld(palm, 0);
+                    // --- CAMBIO 2: Actualizar la posición de los punteros del pulgar y el índice ---
+                    const worldThumbPos = mapHandTo3DWorld(thumbTip, 0);
+                    const worldIndexPos = mapHandTo3DWorld(indexTip, 0);
+                    
+                    // Calculamos los índices correctos en el array de handMarkers
+                    const thumbMarkerIndex = handIndex * 2;
+                    const indexMarkerIndex = handIndex * 2 + 1;
 
-                    handInteractions[index].position.copy(worldPosition);
-                    handInteractions[index].density = THREE.MathUtils.clamp(density, 0.0, 1.0);
-
-                    // --- CAMBIO 5: Actualizar la posición y visibilidad del puntero ---
-                    handMarkers[index].position.copy(worldPosition);
+                    handMarkers[thumbMarkerIndex].position.copy(worldThumbPos);
+                    handMarkers[indexMarkerIndex].position.copy(worldIndexPos);
+                    
                     if (showPointers) {
-                        handMarkers[index].visible = true;
+                        handMarkers[thumbMarkerIndex].visible = true;
+                        handMarkers[indexMarkerIndex].visible = true;
                     }
                 });
             }
 
             fogMeshes.forEach(mesh => {
                 mesh.material.uniforms.time.value = elapsedTime;
-                // (El resto de las actualizaciones de uniforms no cambia)
                 mesh.material.uniforms.hand1Pos.value.copy(handInteractions[0].position);
                 mesh.material.uniforms.hand1Density.value = handInteractions[0].density;
                 mesh.material.uniforms.hand2Pos.value.copy(handInteractions[1].position);
