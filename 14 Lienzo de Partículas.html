@@ -30,8 +30,8 @@
     <canvas id="particle-canvas"></canvas>
 
     <script type="module">
-        // --- CAMBIO 1: Se importa DrawingUtils para dibujar los puntos ---
-        import { HandLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr/npm/@mediapipe/tasks-vision@0.10.14";
+        // --- CORRECCIÓN 1: Se añade ".net" a la URL de importación ---
+        import { HandLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
 
         const video = document.getElementById("input_video");
         const canvas = document.getElementById("particle-canvas");
@@ -40,9 +40,8 @@
         let handLandmarker;
         let particles = [];
         
-        // --- CAMBIO 2: Se instancia DrawingUtils y se añade la variable de estado ---
         const drawingUtils = new DrawingUtils(ctx);
-        let showTrackingPoints = false; // Por defecto, no se muestran los puntos
+        let showTrackingPoints = false;
 
         const PARTICLE_COUNT = 300;
         const REPULSION_RADIUS = 100;
@@ -50,18 +49,17 @@
         const MAX_CONNECTION_DIST = 90;
         const PARTICLE_SPEED = 1;
 
-        // --- CAMBIO 3: Función para activar la visibilidad una sola vez ---
         function activateTrackingVisibility() {
             showTrackingPoints = true;
-            // Se remueven los listeners para que no se ejecute de nuevo
             window.removeEventListener('click', activateTrackingVisibility);
             window.removeEventListener('touchstart', activateTrackingVisibility);
-            document.body.style.cursor = 'default'; // Se restaura el cursor
+            document.body.style.cursor = 'default';
         }
         window.addEventListener('click', activateTrackingVisibility);
         window.addEventListener('touchstart', activateTrackingVisibility);
 
         async function createHandLandmarker() {
+            // --- CORRECCIÓN 2: Se añade ".net" a la URL de los archivos de visión ---
             const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
             handLandmarker = await HandLandmarker.createFromOptions(vision, {
                 baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
@@ -151,7 +149,6 @@
                         }));
                         handPixelLandmarks.push(...pixelLandmarks);
 
-                        // --- CAMBIO 4: Dibuja los puntos y conexiones si está activado ---
                         if (showTrackingPoints) {
                             drawingUtils.drawConnectors(landmarks, HandLandmarker.HAND_CONNECTIONS, { color: '#FFFFFF', lineWidth: 2 });
                             drawingUtils.drawLandmarks(landmarks, { color: '#00FF99', radius: 4 });
