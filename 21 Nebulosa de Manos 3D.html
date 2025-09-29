@@ -29,8 +29,8 @@
 
         let handLandmarker;
         let scene, camera, renderer, videoTexture;
-        const handMeshes = [null, null]; // Para almacenar las mallas de las dos manos
-        let backgroundPlane; // Variable para el plano de fondo
+        const handMeshes = [null, null];
+        let backgroundPlane;
 
         const video = document.getElementById("input_video");
         const container = document.getElementById("container");
@@ -52,7 +52,6 @@
             navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } }).then(stream => {
                 video.srcObject = stream;
                 video.addEventListener("loadeddata", () => {
-                    // Esperamos a que el video tenga sus dimensiones
                     video.width = video.videoWidth;
                     video.height = video.videoHeight;
                     setupThreeJS();
@@ -63,8 +62,7 @@
 
         function setupThreeJS() {
             scene = new THREE.Scene();
-            const aspect = window.innerWidth / window.innerHeight;
-            camera = new THREE.PerspectiveCamera(60, aspect, 0.1, 100);
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
             camera.position.z = 1.5;
 
             renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -75,16 +73,14 @@
             videoTexture.minFilter = THREE.LinearFilter;
             videoTexture.magFilter = THREE.LinearFilter;
             
-            // --- CÓDIGO CLAVE PARA AJUSTAR EL PLANO DE FONDO ---
-            // Creamos un plano 3D que usará la textura del video
-            const backgroundPlaneGeo = new THREE.PlaneGeometry(1, 1); // Tamaños iniciales arbitrarios
+            const backgroundPlaneGeo = new THREE.PlaneGeometry(1, 1);
             const backgroundPlaneMat = new THREE.MeshBasicMaterial({ map: videoTexture });
             backgroundPlane = new THREE.Mesh(backgroundPlaneGeo, backgroundPlaneMat);
-            backgroundPlane.position.z = -0.5; // Colocamos un poco hacia atrás
+            backgroundPlane.position.z = -0.5;
             scene.add(backgroundPlane);
 
-            // Ajusta el tamaño del plano de fondo para que coincida con la vista de la cámara
-            adjustBackgroundPlaneSize();
+            // Se ajusta el tamaño del plano para que coincida perfectamente con la vista
+            fitBackgroundToView();
 
             const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
             scene.add(ambientLight);
@@ -95,38 +91,27 @@
             window.addEventListener('resize', onWindowResize);
         }
 
-        function adjustBackgroundPlaneSize() {
+        // --- FUNCIÓN SIMPLIFICADA Y CORREGIDA PARA AJUSTAR EL FONDO ---
+        function fitBackgroundToView() {
             if (!video.videoWidth || !video.videoHeight) return;
 
-            const videoAspect = video.videoWidth / video.videoHeight;
             const cameraFovRad = camera.fov * Math.PI / 180;
+            // Calcula el alto y ancho visible en la escena a la profundidad del plano
             const viewHeight = 2 * Math.tan(cameraFovRad / 2) * Math.abs(camera.position.z - backgroundPlane.position.z);
-            let viewWidth = viewHeight * camera.aspect;
+            const viewWidth = viewHeight * camera.aspect;
 
-            let planeWidth, planeHeight;
-
-            // Decidir si el video es más ancho o más alto que la vista
-            // para cubrir completamente el viewport sin distorsionar
-            if (videoAspect > camera.aspect) {
-                // El video es más ancho que la vista, ajustamos la altura del plano
-                planeHeight = viewHeight;
-                planeWidth = viewHeight * videoAspect;
-            } else {
-                // El video es más alto que la vista, ajustamos el ancho del plano
-                planeWidth = viewWidth;
-                planeHeight = viewWidth / videoAspect;
-            }
-            
-            backgroundPlane.scale.set(planeWidth, planeHeight, 1);
+            // Ajusta la escala del plano para que coincida con la vista
+            // La escala X negativa se encarga del efecto espejo
+            backgroundPlane.scale.set(-viewWidth, viewHeight, 1);
         }
 
         function onWindowResize() {
-            const aspect = window.innerWidth / window.innerHeight;
-            camera.aspect = aspect;
+            camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
             
-            adjustBackgroundPlaneSize(); // Reajusta el plano de fondo en redimensionamiento
+            // Reajusta el plano en cada cambio de tamaño para mantener la alineación
+            fitBackgroundToView();
         }
 
         function updateHandMesh(handIndex, landmarks) {
@@ -143,25 +128,18 @@
             
             handMeshes[handIndex].visible = true;
 
-            const currentAspect = window.innerWidth / window.innerHeight;
-            // Coordenadas del video normalizadas (0 a 1).
-            // Convertimos a coordenadas del espacio 3D de Three.js.
-            // Para que se alineen con el plano de fondo, necesitamos escalar
-            // estas coordenadas al tamaño real del plano de fondo y centrarlas.
-            
-            const scaledVideoWidth = backgroundPlane.scale.x;
-            const scaledVideoHeight = backgroundPlane.scale.y;
+            // Obtenemos el tamaño visible real del plano de fondo para el mapeo
+            const viewWidth = backgroundPlane.scale.x;
+            const viewHeight = backgroundPlane.scale.y;
 
             FINGER_TIPS.forEach(tipIndex => {
                 const landmark = landmarks[tipIndex];
 
-                // Convertimos las coordenadas normalizadas (0-1) a coordenadas del plano de fondo
-                // y luego a coordenadas de la escena 3D.
-                const x = (landmark.x - 0.5) * scaledVideoWidth;
-                const y = -(landmark.y - 0.5) * scaledVideoHeight; // Y invertido para Three.js
-
-                // Ajustamos 'z' para que esté delante del plano de fondo
-                const z = -landmark.z * 2.5 + 0.1; // Ajusta este valor si los puntos parecen demasiado lejos o cerca
+                // --- MAPEO DE COORDENADAS CORREGIDO Y DIRECTO ---
+                // Se mapean las coordenadas (0-1) al tamaño del plano visible
+                const x = (landmark.x - 0.5) * viewWidth;
+                const y = -(landmark.y - 0.5) * viewHeight;
+                const z = -landmark.z * 2.5 + 0.1;
 
                 const trailGeometry = new THREE.SphereGeometry(0.03, 16, 16);
                 const hue = (performance.now() / 2000 + landmark.z) % 1;
@@ -172,7 +150,6 @@
                 trailSphere.position.set(x, y, z);
                 
                 trailSphere.life = 1.0; 
-                trailSphere.scaleStart = new THREE.Vector3(1, 1, 1);
                 handMeshes[handIndex].add(trailSphere);
             });
         }
@@ -189,7 +166,8 @@
                             childrenToRemove.push(child);
                         } else {
                             child.material.opacity = child.life;
-                            child.scale.lerp(new THREE.Vector3(0.01, 0.01, 0.01), 0.025);
+                            // Se simplifica la animación de escala para que se encoja
+                            child.scale.multiplyScalar(0.98);
                         }
                     }
                 });
@@ -206,12 +184,16 @@
                 results.landmarks.forEach((landmarks, i) => {
                     updateHandMesh(i, landmarks);
                 });
+                
+                // Si no se detectan manos, oculta las mallas existentes
+                if (results.landmarks.length < 2 && handMeshes[1]) handMeshes[1].visible = false;
+                if (results.landmarks.length < 1 && handMeshes[0]) handMeshes[0].visible = false;
             }
 
             animateTrails();
             
-            // La magia del modo espejo
-            scene.scale.x = -1;
+            // --- EL ESPEJO AHORA SE MANEJA EN EL PLANO, NO EN LA ESCENA ---
+            // La línea `scene.scale.x = -1;` ha sido eliminada.
 
             renderer.render(scene, camera);
         }
