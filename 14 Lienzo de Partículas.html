@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Lienzo de Partículas</title>
+    <title>Lienzo de Partículas Interactivo (Corregido)</title>
     <style>
         body {
             margin: 0;
@@ -12,10 +12,10 @@
             justify-content: center;
             align-items: center;
             height: 100vh;
-            cursor: pointer; /* Indica que se puede hacer clic */
+            cursor: pointer; /* Añadido para indicar que se puede hacer clic */
         }
         #particle-canvas {
-            transform: scaleX(-1); /* Efecto espejo */
+            transform: scaleX(-1);
             position: absolute;
             top: 0;
             left: 0;
@@ -30,7 +30,7 @@
     <canvas id="particle-canvas"></canvas>
 
     <script type="module">
-        // --- CORRECCIÓN 1: Se añade ".net" a la URL de importación ---
+        // --- CORRECCIÓN 1 Y AJUSTE 1: Se corrige la URL y se importa DrawingUtils ---
         import { HandLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
 
         const video = document.getElementById("input_video");
@@ -39,7 +39,8 @@
 
         let handLandmarker;
         let particles = [];
-        
+
+        // --- AJUSTE 2: Se instancia DrawingUtils y se crea la variable de estado ---
         const drawingUtils = new DrawingUtils(ctx);
         let showTrackingPoints = false;
 
@@ -49,6 +50,7 @@
         const MAX_CONNECTION_DIST = 90;
         const PARTICLE_SPEED = 1;
 
+        // --- AJUSTE 3: Función para activar la visibilidad de los puntos con un solo clic ---
         function activateTrackingVisibility() {
             showTrackingPoints = true;
             window.removeEventListener('click', activateTrackingVisibility);
@@ -149,6 +151,7 @@
                         }));
                         handPixelLandmarks.push(...pixelLandmarks);
 
+                        // --- AJUSTE 4: Dibuja los puntos y conexiones solo si está activado ---
                         if (showTrackingPoints) {
                             drawingUtils.drawConnectors(landmarks, HandLandmarker.HAND_CONNECTIONS, { color: '#FFFFFF', lineWidth: 2 });
                             drawingUtils.drawLandmarks(landmarks, { color: '#00FF99', radius: 4 });
