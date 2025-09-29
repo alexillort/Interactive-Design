@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Arpegiador Interactivo Radial</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; cursor: pointer; }
+        #container { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; }
+        #input_video { display: none; }
+        #info {
+            position: absolute; top: 20px; left: 20px;
+            width: calc(100% - 40px); color: white;
+            font-family: monospace; font-size: 24px;
+            text-shadow: 2px 2px 4px #000; z-index: 100;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">Haz clic para iniciar la melodía</div>
+    <video id="input_video" autoplay playsinline></video>
+    <div id="container"></div>
+
+    <script type="importmap">
+    { "imports": { "three": "https://unpkg.com/three@0.164.1/build/three.module.js" } }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+        const WRIST = 0, THUMB_CMC = 1, THUMB_MCP = 2, THUMB_IP = 3, THUMB_TIP = 4;
+        const INDEX_MCP = 5, INDEX_PIP = 6, INDEX_DIP = 7, INDEX_TIP = 8;
+        const MIDDLE_MCP = 9, MIDDLE_PIP = 10, MIDDLE_DIP = 11, MIDDLE_TIP = 12;
+        const RING_MCP = 13, RING_PIP = 14, RING_DIP = 15, RING_TIP = 16;
+        const PINKY_MCP = 17, PINKY_PIP = 18, PINKY_DIP = 19, PINKY_TIP = 20;
+        
+        // --- CAMBIO 1: Definir el nuevo set de conexiones personalizadas ---
+        const CUSTOM_HAND_CONNECTIONS = [
+            // Dedos originales
+            [WRIST, THUMB_CMC], [THUMB_CMC, THUMB_MCP], [THUMB_MCP, THUMB_IP], [THUMB_IP, THUMB_TIP],
+            [WRIST, INDEX_MCP], [INDEX_MCP, INDEX_PIP], [INDEX_PIP, INDEX_DIP], [INDEX_DIP, INDEX_TIP],
+            [WRIST, MIDDLE_MCP], [MIDDLE_MCP, MIDDLE_PIP], [MIDDLE_PIP, MIDDLE_DIP], [MIDDLE_DIP, MIDDLE_TIP],
+            [WRIST, RING_MCP], [RING_MCP, RING_PIP], [RING_PIP, RING_DIP], [RING_DIP, RING_TIP],
+            [WRIST, PINKY_MCP], [PINKY_MCP, PINKY_PIP], [PINKY_PIP, PINKY_DIP], [PINKY_DIP, PINKY_TIP],
+            // Conexiones de la palma
+            [INDEX_MCP, MIDDLE_MCP], [MIDDLE_MCP, RING_MCP], [RING_MCP, PINKY_MCP],
+
+            // --- NUEVAS CONEXIONES RADIALES DESDE LA MUÑECA ---
+            [WRIST, THUMB_IP], // Conexión extra al pulgar
+            [WRIST, INDEX_DIP], // Conexión a la falange distal del índice
+            [WRIST, MIDDLE_DIP], // Conexión a la falange distal del medio
+            [WRIST, RING_DIP], // Conexión a la falange distal del anular
+            [WRIST, PINKY_DIP]  // Conexión a la falange distal del meñique
+        ];
+
+        let audioContext, oscillator, masterGain, audioInitialized = false;
+        let handLandmarker, scene, camera, renderer, videoTexture, backgroundPlane;
+        let handPointGroups = [];
+        const video = document.getElementById("input_video");
+        const container = document.getElementById("container");
+        const infoDiv = document.getElementById("info");
+
+        let arpeggiatorInterval, currentNoteIndex = 0, arpeggioSpeed = 150;
+        const scaleFrequencies = [
+            220.00, 261.63, 293.66, 329.63, 392.00, 440.00, 523.25, 587.33, 659.25, 783.99, 880.00, 1046.50, 1174.66, 1318.51, 1567.98
+        ];
+        let baseNoteFrequency = scaleFrequencies[0];
+        let volumeLine = null, volumeMidPoint = null;
+
+        function setupWebAudio() {
+            if (audioInitialized) return;
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            oscillator = audioContext.createOscillator();
+            masterGain = audioContext.createGain();
+            const reverb = audioContext.createConvolver();
+            oscillator.type = 'sine';
+            oscillator.connect(masterGain);
+            masterGain.connect(reverb);
+            reverb.connect(audioContext.destination);
+            const impulseLength = 2.5;
+            const impulseBuffer = audioContext.createBuffer(2, audioContext.sampleRate * impulseLength, audioContext.sampleRate);
+            for (let i = 0; i < 2; i++) {
+                const ch = impulseBuffer.getChannelData(i);
+                for (let j = 0; j < ch.length; j++) ch[j] = (Math.random()*2-1)*Math.pow(1-j/ch.length, 3);
+            }
+            reverb.buffer = impulseBuffer;
+            masterGain.gain.setValueAtTime(0, audioContext.currentTime);
+            oscillator.start();
+            audioInitialized = true;
+            infoDiv.textContent = "Interactúa con tus manos";
+            startArpeggiator();
+        }
+
+        function playArpeggioNote() {
+            if (masterGain.gain.value <= 0.001) { masterGain.gain.setValueAtTime(0, audioContext.currentTime); return; };
+            const pattern = [0, 2, 4, 7]; 
+            const scaleIndex = scaleFrequencies.indexOf(baseNoteFrequency);
+            if (scaleIndex === -1) return;
+            const noteIndexInPattern = pattern[currentNoteIndex % pattern.length];
+            const actualScaleIndex = (scaleIndex + noteIndexInPattern) % scaleFrequencies.length; 
+            const freq = scaleFrequencies[actualScaleIndex];
+            oscillator.frequency.setValueAtTime(freq, audioContext.currentTime);
+            masterGain.gain.setValueAtTime(masterGain.gain.value, audioContext.currentTime);
+            masterGain.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + (arpeggioSpeed / 1000) * 0.9);
+            currentNoteIndex++;
+        }
+
+        function startArpeggiator() {
+            if (arpeggiatorInterval) clearInterval(arpeggiatorInterval);
+            arpeggiatorInterval = setInterval(playArpeggioNote, arpeggioSpeed);
+        }
+
+        function updateArpeggiatorSpeed(speed) {
+            if (Math.abs(arpeggioSpeed - speed) > 10) { arpeggioSpeed = speed; startArpeggiator(); }
+        }
+        
+        document.body.addEventListener('click', () => { if (!audioInitialized) setupWebAudio(); });
+
+        async function setupMediapipe() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
+                runningMode: "VIDEO", numHands: 2
+            });
+            startCamera();
+        }
+
+        function startCamera() {
+            navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } }).then(stream => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", () => {
+                    video.width = video.videoWidth; video.height = video.videoHeight;
+                    setupThreeJS();
+                    animate();
+                });
+            });
+        }
+
+        function setupThreeJS() {
+            scene = new THREE.Scene();
+            const aspect = window.innerWidth / window.innerHeight;
+            const frustumSize = 2; 
+            camera = new THREE.OrthographicCamera(frustumSize*aspect/-2, frustumSize*aspect/2, frustumSize/2, frustumSize/-2, 0.1, 100);
+            camera.position.z = 1;
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            container.appendChild(renderer.domElement);
+            
+            videoTexture = new THREE.VideoTexture(video);
+            const backgroundPlaneGeo = new THREE.PlaneGeometry(1, 1);
+            const backgroundPlaneMat = new THREE.MeshBasicMaterial({ map: videoTexture });
+            backgroundPlane = new THREE.Mesh(backgroundPlaneGeo, backgroundPlaneMat);
+            backgroundPlane.position.z = -1;
+            scene.add(backgroundPlane);
+
+            for (let i = 0; i < 2; i++) {
+                const group = new THREE.Group();
+                scene.add(group);
+                handPointGroups.push(group);
+            }
+
+            const lineGeometry = new THREE.BufferGeometry();
+            const lineMaterial = new THREE.LineBasicMaterial({ color: 0x00ff00, linewidth: 3, transparent: true, opacity: 0.8 });
+            volumeLine = new THREE.Line(lineGeometry, lineMaterial);
+            scene.add(volumeLine);
+
+            const midPointGeometry = new THREE.SphereGeometry(0.015, 16, 16);
+            const midPointMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.9 });
+            volumeMidPoint = new THREE.Mesh(midPointGeometry, midPointMaterial);
+            scene.add(volumeMidPoint);
+            volumeMidPoint.visible = false;
+
+            window.addEventListener('resize', onWindowResize);
+            onWindowResize();
+        }
+
+        function onWindowResize() {
+            const aspect = window.innerWidth / window.innerHeight;
+            const frustumSize = 2;
+            camera.left = frustumSize*aspect/-2; camera.right = frustumSize*aspect/2;
+            camera.top = frustumSize/2; camera.bottom = frustumSize/-2;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            if (backgroundPlane) {
+                const viewHeight = camera.top - camera.bottom; const viewWidth = camera.right - camera.left;
+                const videoAspect = video.videoWidth / video.videoHeight; const viewAspect = viewWidth / viewHeight;
+                let planeWidth, planeHeight;
+                if (videoAspect > viewAspect) { planeHeight = viewHeight; planeWidth = viewHeight * videoAspect; } 
+                else { planeWidth = viewWidth; planeHeight = viewWidth / videoAspect; }
+                backgroundPlane.scale.set(planeWidth, planeHeight, 1);
+            }
+        }
+
+        function updateHandControls(results) {
+            let volume = 0, speed = 250;
+            let rightHand = null, leftHand = null;
+
+            if (results.handedness?.length > 0) {
+                results.handedness.forEach((hand, index) => {
+                    if (hand[0].categoryName === 'Right') rightHand = results.landmarks[index];
+                    else if (hand[0].categoryName === 'Left') leftHand = results.landmarks[index];
+                });
+            }
+
+            if (rightHand) {
+                const wristX = 1 - rightHand[WRIST].x;
+                const noteIndex = Math.floor(wristX * scaleFrequencies.length);
+                baseNoteFrequency = scaleFrequencies[Math.max(0, Math.min(scaleFrequencies.length - 1, noteIndex))];
+            }
+
+            if (leftHand) {
+                speed = 300 - ((1 - leftHand[WRIST].y) * 250);
+                const distance = Math.hypot(leftHand[THUMB_TIP].x-leftHand[INDEX_TIP].x, leftHand[THUMB_TIP].y-leftHand[INDEX_TIP].y);
+                const minPinch = 0.03, maxPinch = 0.20;
+                volume = Math.max(0, Math.min(1, (distance - minPinch) / (maxPinch - minPinch))) * 0.7;
+
+                if (volumeLine && volumeMidPoint) {
+                    const worldWidth = backgroundPlane.scale.x; const worldHeight = backgroundPlane.scale.y;
+                    const p1 = new THREE.Vector3((leftHand[INDEX_TIP].x - 0.5) * worldWidth, -(leftHand[INDEX_TIP].y - 0.5) * worldHeight, 0);
+                    const p2 = new THREE.Vector3((leftHand[THUMB_TIP].x - 0.5) * worldWidth, -(leftHand[THUMB_TIP].y - 0.5) * worldHeight, 0);
+                    volumeLine.geometry.setFromPoints([p1, p2]);
+                    volumeLine.visible = true;
+                    volumeLine.material.opacity = 0.3 + (volume * 0.7); 
+                    volumeMidPoint.position.set((p1.x + p2.x)/2, (p1.y + p2.y)/2, 0);
+                    volumeMidPoint.visible = true;
+                    volumeMidPoint.scale.setScalar((0.01 + (volume*0.02)) / 0.015);
+                    volumeMidPoint.material.opacity = 0.5 + (volume * 0.5);
+                }
+            } else {
+                if (volumeLine) volumeLine.visible = false;
+                if (volumeMidPoint) volumeMidPoint.visible = false;
+            }
+
+            if (audioInitialized) {
+                masterGain.gain.linearRampToValueAtTime(volume, audioContext.currentTime + 0.05);
+                updateArpeggiatorSpeed(speed);
+                infoDiv.textContent = `Nota:${baseNoteFrequency.toFixed(0)}Hz|Ritmo:${((300-speed)/250*100).toFixed(0)}%|Vol:${(volume/0.7*100).toFixed(0)}%`;
+            }
+        }
+        
+        function updateHandPoints(results) {
+            if (!backgroundPlane || !results.landmarks) return;
+            const landmarks = results.landmarks;
+
+            landmarks.forEach((handLandmarks, handIndex) => {
+                const handGroup = handPointGroups[handIndex];
+                while(handGroup.children.length) handGroup.remove(handGroup.children[0]);
+                
+                const worldWidth = backgroundPlane.scale.x;
+                const worldHeight = backgroundPlane.scale.y;
+
+                // --- CAMBIO 2: Dibujar Puntos con el nuevo estilo ---
+                for (let i = 0; i < handLandmarks.length; i++) {
+                    const landmark = handLandmarks[i];
+                    const x = (landmark.x - 0.5) * worldWidth;
+                    const y = -(landmark.y - 0.5) * worldHeight;
+                    const z = 0.1; // Ligeramente delante del video
+
+                    let pointSize = (i === WRIST) ? 0.03 : 0.015;
+                    let pointColor = (i === WRIST) ? 0x00ffff : 0x88aaff; // Cian para muñeca, azul claro para el resto
+
+                    const geometry = new THREE.SphereGeometry(pointSize, 16, 16);
+                    const material = new THREE.MeshBasicMaterial({ color: pointColor, transparent: true, opacity: 0.9 });
+                    const pointMesh = new THREE.Mesh(geometry, material);
+                    pointMesh.position.set(x, y, z);
+                    handGroup.add(pointMesh);
+                }
+
+                // --- CAMBIO 3: Dibujar Líneas con el nuevo estilo ---
+                const fingerLineMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 2, transparent: true, opacity: 0.5 });
+                const wristLineMaterial = new THREE.LineBasicMaterial({ color: 0x00ffff, linewidth: 3, transparent: true, opacity: 0.7 });
+
+                CUSTOM_HAND_CONNECTIONS.forEach(connection => {
+                    const [p1Index, p2Index] = connection;
+                    const p1 = handLandmarks[p1Index];
+                    const p2 = handLandmarks[p2Index];
+
+                    const linePoints = [
+                        new THREE.Vector3((p1.x - 0.5) * worldWidth, -(p1.y - 0.5) * worldHeight, 0.1),
+                        new THREE.Vector3((p2.x - 0.5) * worldWidth, -(p2.y - 0.5) * worldHeight, 0.1)
+                    ];
+
+                    const lineGeometry = new THREE.BufferGeometry().setFromPoints(linePoints);
+                    // Usar material cian si la línea se conecta a la muñeca
+                    const material = (p1Index === WRIST || p2Index === WRIST) ? wristLineMaterial : fingerLineMaterial;
+                    const line = new THREE.Line(lineGeometry, material);
+                    handGroup.add(line);
+                });
+            });
+
+            // Limpia los grupos de las manos que no se detectan
+            for (let i = landmarks.length; i < 2; i++) {
+                const handGroup = handPointGroups[i];
+                while(handGroup.children.length > 0) handGroup.remove(handGroup.children[0]);
+            }
+        }
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            if (handLandmarker && video.readyState >= 4) {
+                const results = handLandmarker.detectForVideo(video, performance.now());
+                updateHandControls(results);
+                // La lógica de mostrar/ocultar puntos ha sido eliminada. Ahora siempre se llama a updateHandPoints.
+                updateHandPoints(results);
+            }
+            scene.scale.x = -1;
+            renderer.render(scene, camera);
+        }
+
+        setupMediapipe();
+    </script>
+</body>
+</html>
