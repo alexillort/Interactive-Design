@@ -12,6 +12,7 @@
             justify-content: center;
             align-items: center;
             height: 100vh;
+            cursor: pointer; /* Indica que la pantalla es interactiva */
         }
         #main-canvas {
             transform: scaleX(-1); /* Efecto espejo para interacción natural */
@@ -26,8 +27,8 @@
     <canvas id="main-canvas"></canvas>
 
     <script type="module">
-        // La importación problemática ha sido eliminada. Ahora importamos todo desde un solo lugar.
-        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+        // --- CAMBIO 1: Se importa DrawingUtils para dibujar los puntos ---
+        import { HandLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
 
         const video = document.getElementById("input_video");
         const canvas = document.getElementById("main-canvas");
@@ -35,9 +36,23 @@
 
         let handLandmarker;
         let particles = [];
-        const FINGER_TIPS = [4, 8, 12, 16, 20]; // Índices de las yemas de los dedos
+        const FINGER_TIPS = [4, 8, 12, 16, 20];
 
-        // --- CLASE PARA LAS PARTÍCULAS DE ENERGÍA ---
+        // --- CAMBIO 2: Se instancia DrawingUtils y se crea la variable de estado ---
+        const drawingUtils = new DrawingUtils(ctx);
+        let showTrackingPoints = false; // Por defecto, no se muestran los puntos
+
+        // --- CAMBIO 3: Función para activar la visibilidad una sola vez al hacer clic ---
+        function activateTrackingVisibility() {
+            showTrackingPoints = true;
+            window.removeEventListener('click', activateTrackingVisibility);
+            window.removeEventListener('touchstart', activateTrackingVisibility);
+            document.body.style.cursor = 'default'; // Restaura el cursor
+        }
+        window.addEventListener('click', activateTrackingVisibility);
+        window.addEventListener('touchstart', activateTrackingVisibility);
+
+
         class Particle {
             constructor(x, y) {
                 this.x = x;
@@ -45,14 +60,14 @@
                 this.size = Math.random() * 6 + 3;
                 this.speedX = Math.random() * 3 - 1.5;
                 this.speedY = Math.random() * 3 - 1.5;
-                this.color = `hsl(${Math.random() * 60 + 180}, 100%, 70%)`; // Tonos cian y azul
-                this.life = 1; // 1 = 100% de vida
+                this.color = `hsl(${Math.random() * 60 + 180}, 100%, 70%)`;
+                this.life = 1;
             }
 
             update() {
                 this.x += this.speedX;
                 this.y += this.speedY;
-                this.life -= 0.03; // La partícula se desvanece
+                this.life -= 0.03;
                 if (this.size > 0.2) this.size -= 0.1;
             }
 
@@ -65,7 +80,6 @@
             }
         }
 
-        // --- INICIALIZACIÓN DE MEDIAPIPE ---
         async function createHandLandmarker() {
             const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
             handLandmarker = await HandLandmarker.createFromOptions(vision, {
@@ -77,7 +91,6 @@
         }
         createHandLandmarker();
 
-        // --- INICIAR CÁMARA Y AJUSTAR CANVAS ---
         function startCamera() {
             navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
                 video.srcObject = stream;
@@ -96,37 +109,34 @@
             }).catch(err => console.error("ERROR:", err));
         }
 
-        // --- BUCLE PRINCIPAL DE ANIMACIÓN ---
         function animate() {
-            // 1. Dibuja el video de la cámara en el fondo
             ctx.globalAlpha = 1;
-            ctx.globalCompositeOperation = 'source-over'; // Modo de dibujo normal
+            ctx.globalCompositeOperation = 'source-over';
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
             const results = handLandmarker?.detectForVideo(video, performance.now());
 
-            // 2. Cambia al modo de dibujo "luminoso" para los efectos
             ctx.globalCompositeOperation = 'lighter';
             
             if (results?.landmarks) {
                 for (const landmarks of results.landmarks) {
-                    // 3. DIBUJAR EL AURA
                     drawAura(landmarks);
-
-                    // 4. EMITIR PARTÍCULAS
                     emitParticles(landmarks);
+
+                    // --- CAMBIO 4: Dibuja los puntos y conexiones solo si está activado ---
+                    if (showTrackingPoints) {
+                        drawingUtils.drawConnectors(landmarks, HandLandmarker.HAND_CONNECTIONS, { color: 'rgba(255, 255, 255, 0.8)', lineWidth: 2 });
+                        drawingUtils.drawLandmarks(landmarks, { color: '#00FFDD', radius: 4 });
+                    }
                 }
             }
             
-            // 5. ACTUALIZAR Y DIBUJAR TODAS LAS PARTÍCULAS EXISTENTES
             handleParticles();
-
             requestAnimationFrame(animate);
         }
 
-        // Dibuja el contorno brillante de la mano
         function drawAura(landmarks) {
-            const hull = getConvexHull(landmarks); // Obtiene el contorno de la mano
+            const hull = getConvexHull(landmarks);
             if (!hull) return;
 
             ctx.fillStyle = 'rgba(0, 200, 255, 0.3)';
@@ -140,34 +150,29 @@
             }
             ctx.closePath();
             ctx.fill();
-
-            // Restablecer sombra para otros elementos
             ctx.shadowBlur = 0;
         }
 
-        // Genera nuevas partículas desde las yemas de los dedos
         function emitParticles(landmarks) {
             FINGER_TIPS.forEach(tipIndex => {
                 const finger = landmarks[tipIndex];
-                for (let i = 0; i < 2; i++) { // Genera 2 partículas por dedo/frame
+                for (let i = 0; i < 2; i++) {
                     particles.push(new Particle(finger.x * canvas.width, finger.y * canvas.height));
                 }
             });
         }
         
-        // Actualiza, dibuja y elimina las partículas
         function handleParticles() {
             for (let i = particles.length - 1; i >= 0; i--) {
                 particles[i].update();
                 if (particles[i].life <= 0) {
-                    particles.splice(i, 1); // Elimina la partícula muerta
+                    particles.splice(i, 1);
                 } else {
                     particles[i].draw();
                 }
             }
         }
 
-        // Algoritmo para calcular el contorno de un conjunto de puntos (Convex Hull)
         function getConvexHull(landmarks) {
             if (landmarks.length < 3) return null;
             let hull = [];
