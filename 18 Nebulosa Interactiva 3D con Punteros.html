@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Nebulosa Interactiva 3D con Punteros</title>
+    <title>Nebulosa Interactiva 3D</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; }
         #render-canvas { position: absolute; top: 0; left: 0; }
@@ -29,7 +29,6 @@
         import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
         import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
 
-        // --- MEDIAPIPE SETUP ---
         const video = document.getElementById("input_video");
         let handLandmarker;
         async function createHandLandmarker() {
@@ -51,29 +50,24 @@
         }
         createHandLandmarker();
 
-        // --- THREE.JS SETUP ---
         let scene, camera, renderer, composer, particles, particleVelocities;
         const handAttractors = [new THREE.Vector3(), new THREE.Vector3()];
-        let handMarkers = []; // NUEVO: Array para guardar los punteros
+        let handMarkers = [];
 
-        // --- PARÁMETROS ---
         const NUM_PARTICLES = 5000;
-        const ATTRACTION_FORCE = 1.5; // Lo dejamos con más atracción como pediste
+        const ATTRACTION_FORCE = 1.5;
         const DAMPING = 0.98;
 
         function init() {
-            // Escena y Cámara
             scene = new THREE.Scene();
             camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
             camera.position.z = 150;
 
-            // Renderer
             renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('render-canvas'), antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(window.devicePixelRatio);
             renderer.toneMapping = THREE.ReinhardToneMapping;
 
-            // Sistema de Partículas
             const particleGeometry = new THREE.BufferGeometry();
             const particlePositions = new Float32Array(NUM_PARTICLES * 3);
             particleVelocities = new Float32Array(NUM_PARTICLES * 3);
@@ -98,20 +92,18 @@
             particles = new THREE.Points(particleGeometry, particleMaterial);
             scene.add(particles);
 
-            // NUEVO: Crear los puntos marcadores para las manos
-            const markerGeometry = new THREE.SphereGeometry(2, 16, 16); // Una pequeña esfera de radio 2
+            const markerGeometry = new THREE.SphereGeometry(2, 16, 16);
             const markerMaterial = new THREE.MeshBasicMaterial({
-                color: 0xffffff, // Color blanco brillante
-                toneMapped: false // Ignora el mapeo de tonos para que siempre brille
+                color: 0x99ff00, // Cambiado a un verde lima para mejor visibilidad
+                toneMapped: false
             });
             for (let i = 0; i < 2; i++) {
                 const marker = new THREE.Mesh(markerGeometry, markerMaterial);
-                marker.position.set(0, 0, -1000); // Inicia fuera de la vista
+                marker.position.set(0, 0, -1000);
                 scene.add(marker);
                 handMarkers.push(marker);
             }
 
-            // Post-procesado (Efecto Bloom)
             const renderScene = new RenderPass(scene, camera);
             const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.0, 0.4, 0.85);
             composer = new EffectComposer(renderer);
@@ -128,14 +120,29 @@
             composer.setSize(window.innerWidth, window.innerHeight);
         }
 
+        // --- NUEVA FUNCIÓN PARA CORREGIR EL DESFASE ---
+        // Convierte las coordenadas de MediaPipe (0 a 1) a coordenadas del mundo 3D
+        function mapHandTo3DWorld(point, targetZ) {
+            // Calcula el alto y ancho visible en el plano Z objetivo
+            const vFOV = THREE.MathUtils.degToRad(camera.fov); // Campo de visión vertical a radianes
+            const visibleHeight = 2 * Math.tan(vFOV / 2) * Math.abs(targetZ - camera.position.z);
+            const visibleWidth = visibleHeight * camera.aspect;
+
+            // Mapea las coordenadas normalizadas a las dimensiones del mundo 3D
+            // Se invierten para que coincidan con el video espejado
+            const worldX = -(point.x - 0.5) * visibleWidth;
+            const worldY = -(point.y - 0.5) * visibleHeight;
+
+            return new THREE.Vector3(worldX, worldY, targetZ);
+        }
+
+
         function animate() {
             requestAnimationFrame(animate);
             const results = handLandmarker?.detectForVideo(video, performance.now());
             
-            // Resetear posiciones de atractores y punteros si no se detectan manos
-            handAttractors[0].set(0, 0, -1000);
-            handAttractors[1].set(0, 0, -1000);
-            handMarkers.forEach(marker => marker.position.set(0, 0, -1000)); // NUEVO
+            handAttractors.forEach(attractor => attractor.set(0, 0, -1000));
+            handMarkers.forEach(marker => marker.position.set(0, 0, -1000));
 
             if (results?.landmarks) {
                 results.landmarks.forEach((landmarks, index) => {
@@ -145,19 +152,16 @@
                     const pinchDist = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y);
                     const zPos = THREE.MathUtils.mapLinear(pinchDist, 0.2, 0.02, -100, 100);
 
-                    // Actualizar la posición del atractor invisible
-                    handAttractors[index].set(
-                        (palm.x - 0.5) * 250 * -1,
-                        (palm.y - 0.5) * 250 * -1,
-                        zPos
-                    );
+                    // --- CÁLCULO CORREGIDO ---
+                    // Se utiliza la nueva función para obtener la posición 3D precisa
+                    const worldPosition = mapHandTo3DWorld(palm, zPos);
 
-                    // NUEVO: Actualizar la posición del puntero visible
-                    handMarkers[index].position.copy(handAttractors[index]);
+                    // Actualizar la posición del atractor invisible y el puntero visible
+                    handAttractors[index].copy(worldPosition);
+                    handMarkers[index].position.copy(worldPosition);
                 });
             }
 
-            // Actualizar la física de las partículas
             const positions = particles.geometry.attributes.position.array;
             for (let i = 0; i < NUM_PARTICLES; i++) {
                 const i3 = i * 3;
