@@ -27,7 +27,6 @@
     <canvas id="main-canvas"></canvas>
 
     <script type="module">
-        // --- CAMBIO 1: Se importa DrawingUtils para dibujar los puntos ---
         import { HandLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
 
         const video = document.getElementById("input_video");
@@ -38,16 +37,14 @@
         let particles = [];
         const FINGER_TIPS = [4, 8, 12, 16, 20];
 
-        // --- CAMBIO 2: Se instancia DrawingUtils y se crea la variable de estado ---
         const drawingUtils = new DrawingUtils(ctx);
-        let showTrackingPoints = false; // Por defecto, no se muestran los puntos
+        let showTrackingPoints = false;
 
-        // --- CAMBIO 3: Función para activar la visibilidad una sola vez al hacer clic ---
         function activateTrackingVisibility() {
             showTrackingPoints = true;
             window.removeEventListener('click', activateTrackingVisibility);
             window.removeEventListener('touchstart', activateTrackingVisibility);
-            document.body.style.cursor = 'default'; // Restaura el cursor
+            document.body.style.cursor = 'default';
         }
         window.addEventListener('click', activateTrackingVisibility);
         window.addEventListener('touchstart', activateTrackingVisibility);
@@ -55,22 +52,18 @@
 
         class Particle {
             constructor(x, y) {
-                this.x = x;
-                this.y = y;
+                this.x = x; this.y = y;
                 this.size = Math.random() * 6 + 3;
                 this.speedX = Math.random() * 3 - 1.5;
                 this.speedY = Math.random() * 3 - 1.5;
                 this.color = `hsl(${Math.random() * 60 + 180}, 100%, 70%)`;
                 this.life = 1;
             }
-
             update() {
-                this.x += this.speedX;
-                this.y += this.speedY;
+                this.x += this.speedX; this.y += this.speedY;
                 this.life -= 0.03;
                 if (this.size > 0.2) this.size -= 0.1;
             }
-
             draw() {
                 ctx.fillStyle = this.color;
                 ctx.globalAlpha = this.life;
@@ -123,9 +116,12 @@
                     drawAura(landmarks);
                     emitParticles(landmarks);
 
-                    // --- CAMBIO 4: Dibuja los puntos y conexiones solo si está activado ---
+                    // --- CAMBIO CLAVE: Se elimina la línea que dibuja los conectores ---
                     if (showTrackingPoints) {
-                        drawingUtils.drawConnectors(landmarks, HandLandmarker.HAND_CONNECTIONS, { color: 'rgba(255, 255, 255, 0.8)', lineWidth: 2 });
+                        // La siguiente línea ha sido eliminada:
+                        // drawingUtils.drawConnectors(landmarks, HandLandmarker.HAND_CONNECTIONS, { color: 'rgba(255, 255, 255, 0.8)', lineWidth: 2 });
+                        
+                        // Solo se dibujan los puntos (landmarks)
                         drawingUtils.drawLandmarks(landmarks, { color: '#00FFDD', radius: 4 });
                     }
                 }
