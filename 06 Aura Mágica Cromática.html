@@ -4,15 +4,13 @@
     <meta charset="UTF-8">
     <title>Aura Mágica Cromática</title>
     <style>
+        /* --- CAMBIO 1: Se elimina el estilo de 'main' --- */
         body { margin: 0; overflow: hidden; background-color: #000; cursor: pointer; }
         
-        /* --- CAMBIO 1 (PROPORCIÓN): Estilo del Canvas --- */
-        /* Usamos la misma lógica del script de LEGO para posicionar el canvas */
         canvas {
             position: absolute;
-            top: 0;
-            left: 0;
-            /* El transform de scaleX(-1) se aplicará en p5.js para el modo espejo */
+            /* top y left se establecerán por JavaScript */
+            /* El transform se aplica en p5.js */
         }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
@@ -47,9 +45,10 @@
             let canvasIniciado = false;
 
             p.setup = () => {
-                // No creamos el canvas aquí, esperamos al video
                 video = p.createCapture(p.VIDEO);
                 video.hide();
+                // --- CAMBIO 3: No se especifica .parent() ---
+                // El canvas se creará en p.draw()
             };
             
             p.mousePressed = () => {
@@ -57,13 +56,12 @@
             };
 
             p.draw = () => {
-                // --- CAMBIO 2 (PROPORCIÓN): Lógica de inicialización del LEGO code ---
+                // Lógica de inicialización para obtener el tamaño nativo del video
                 if (!canvasIniciado && video.width > 0) {
-                    // Crea el canvas con el tamaño EXACTO del video
-                    p.createCanvas(video.width, video.height);
+                    p.createCanvas(video.width, video.height); // Crea el canvas con la proporción nativa
                     auraLayer = p.createGraphics(p.width, p.height);
 
-                    // --- Lógica de escalado del script de LEGO ---
+                    // --- Lógica de escalado del script de LEGO (¡Esta es la clave!) ---
                     const scaleFactor = p.min(p.windowWidth / video.width, p.windowHeight / video.height);
                     const newWidth = video.width * scaleFactor;
                     const newHeight = video.height * scaleFactor;
@@ -79,7 +77,7 @@
                     canvasIniciado = true;
                 }
                 
-                if (!canvasIniciado) { p.background(0); return; }
+                if (!canvasIniciado) { p.background(0); return; } // Espera a que el canvas esté listo
 
                 if (video.elt.readyState === 4 && handLandmarker) {
                     if (video.elt.currentTime !== lastVideoTime) {
@@ -100,17 +98,16 @@
                 auraLayer.noStroke();
                 
                 if (detections && detections.landmarks) {
-                    // --- CAMBIO 3 (COLOR): Un color base que cambia con el tiempo ---
                     const baseHue = (p.frameCount * 0.5) % 360; 
 
                     detections.landmarks.forEach((landmarks, index) => {
                         // Asigna un color diferente a cada mano (index 0 o 1)
-                        // Mano 1: Tonos cálidos (rojo/naranja)
-                        // Mano 2: Tonos fríos (cian/azul)
+                        // Mano 1: Tonos cálidos (ej. 0 + 0 = 0 -> rojo)
+                        // Mano 2: Tonos fríos (ej. 0 + 180 = 180 -> cian)
                         const hue = (baseHue + (index * 180)) % 360; 
 
                         for (const point of landmarks) {
-                            auraLayer.fill(hue, 90, 90); // Rellena con el color dinámico por mano
+                            auraLayer.fill(hue, 90, 90);
                             auraLayer.ellipse(point.x * p.width, point.y * p.height, 80, 80);
                         }
                     });
@@ -118,9 +115,6 @@
 
                 auraLayer.filter(p.BLUR, 30);
                 
-                // --- CAMBIO 4 (COLOR): Se quita el filtro THRESHOLD ---
-                // auraLayer.filter(p.THRESHOLD, 0.2); // Esta línea volvía el aura blanca
-
                 // Dibuja la capa del aura
                 p.push();
                 p.translate(p.width, 0);
