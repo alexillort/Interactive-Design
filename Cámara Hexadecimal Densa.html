@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Cámara Hexadecimal Densa</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            width: 100vw;
+        }
+        #webcam-video {
+            display: none;
+        }
+        #display-canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+            /* object-fit: cover asegura que el canvas llene la pantalla,
+               manteniendo la relación de aspecto y recortando si es necesario. */
+            object-fit: cover;
+            /* Esto ayuda a que el texto se vea un poco más nítido al escalar */
+            image-rendering: crisp-edges;
+            image-rendering: pixelated;
+        }
+        #loading-message {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-family: Arial, sans-serif;
+            font-size: 1.2em;
+            text-align: center;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading-message">Cargando cámara...</div>
+    <video id="webcam-video" autoplay playsinline></video>
+    <canvas id="display-canvas"></canvas>
+
+    <script>
+        const video = document.getElementById('webcam-video');
+        const displayCanvas = document.getElementById('display-canvas');
+        const displayCtx = displayCanvas.getContext('2d', { willReadFrequently: true }); // Optimización
+        const loadingMessage = document.getElementById('loading-message');
+
+        let hiddenCanvas, hiddenCtx;
+
+        // --- CAMBIO CLAVE: Texto más pequeño y denso ---
+        const TARGET_PIXEL_COUNT_WIDTH = 120; // Más "cuadritos" = texto más pequeño
+        let actualPixelSize;
+        
+        let videoWidth = 0;
+        let videoHeight = 0;
+
+        // --- CAMBIO CLAVE: Nueva función para un código Hex de 3 caracteres (12-bit) ---
+        function rgbTo12BitHex(r, g, b) {
+            // Divide por 16 y toma la parte entera para obtener un valor de 0 a 15
+            const r12 = Math.floor(r / 16).toString(16).toUpperCase();
+            const g12 = Math.floor(g / 16).toString(16).toUpperCase();
+            const b12 = Math.floor(b / 16).toString(16).toUpperCase();
+            return `${r12}${g12}${b12}`;
+        }
+
+        async function setupWebcam() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+                video.srcObject = stream;
+                video.addEventListener('loadedmetadata', () => {
+                    videoWidth = video.videoWidth;
+                    videoHeight = video.videoHeight;
+
+                    // Calcula el tamaño del "píxel" basado en la resolución real de la cámara
+                    actualPixelSize = Math.max(1, Math.floor(videoWidth / TARGET_PIXEL_COUNT_WIDTH));
+
+                    // El canvas interno SIEMPRE tiene la misma resolución que la cámara
+                    displayCanvas.width = videoWidth;
+                    displayCanvas.height = videoHeight;
+
+                    hiddenCanvas = document.createElement('canvas');
+                    hiddenCanvas.width = videoWidth;
+                    hiddenCanvas.height = videoHeight;
+                    hiddenCtx = hiddenCanvas.getContext('2d', { willReadFrequently: true });
+
+                    loadingMessage.style.display = 'none';
+                    video.play();
+                    animate();
+                });
+            } catch (err) {
+                console.error("Error al acceder a la cámara:", err);
+                loadingMessage.textContent = "Error: No se pudo acceder a la cámara.";
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (!video.paused && !video.ended) {
+                // 1. Dibujar en el canvas oculto
+                // Volteamos horizontalmente el dibujo para el efecto espejo
+                hiddenCtx.translate(videoWidth, 0);
+                hiddenCtx.scale(-1, 1);
+                hiddenCtx.drawImage(video, 0, 0, videoWidth, videoHeight);
+                hiddenCtx.setTransform(1, 0, 0, 1, 0, 0); // Resetear la transformación
+
+                // 2. Limpiar el canvas visible
+                displayCtx.fillStyle = '#000000'; // Fondo negro
+                displayCtx.fillRect(0, 0, videoWidth, videoHeight);
+
+                // 3. Configurar la fuente
+                // Hacemos la fuente un poco MÁS GRANDE que el píxel para que se solape
+                displayCtx.font = `bold ${actualPixelSize * 1.8}px monospace`;
+                displayCtx.textAlign = 'center';
+                displayCtx.textBaseline = 'middle';
+
+                for (let y = 0; y < videoHeight; y += actualPixelSize) {
+                    for (let x = 0; x < videoWidth; x += actualPixelSize) {
+                        
+                        // Obtenemos el color de un solo píxel en el centro del "cuadrito"
+                        // Esto es más rápido que promediar y da un efecto "punteado"
+                        const pixelData = hiddenCtx.getImageData(x, y, 1, 1).data;
+                        const r = pixelData[0];
+                        const g = pixelData[1];
+                        const b = pixelData[2];
+
+                        // Convertir a texto hex de 3 caracteres
+                        const hexCode = rgbTo12BitHex(r, g, b);
+
+                        // --- CAMBIO CLAVE: Solo dibujamos el texto ---
+                        // No hay displayCtx.fillRect()
+                        
+                        // El color del texto es el color del píxel
+                        displayCtx.fillStyle = `rgb(${r}, ${g}, ${b})`; 
+                        
+                        displayCtx.fillText(hexCode, x + actualPixelSize / 2, y + actualPixelSize / 2);
+                    }
+                }
+            }
+        }
+
+        setupWebcam();
+    </script>
+</body>
+</html>
