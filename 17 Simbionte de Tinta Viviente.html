@@ -4,8 +4,14 @@
     <meta charset="UTF-8">
     <title>Simbionte de Tinta Viviente</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #000; cursor: pointer; } /* Añadido cursor */
-        #main-canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); }
+        body { margin: 0; overflow: hidden; background-color: #000; cursor: pointer; }
+        #main-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            transform: scaleX(-1); /* Efecto espejo */
+            /* El tamaño y posición se ajustarán por JS */
+        }
         #input_video { display: none; }
     </style>
 </head>
@@ -22,8 +28,6 @@
 
         let handLandmarker;
         let tendrils = [];
-
-        // --- CAMBIO 1: Variable de estado para controlar la visibilidad de los puntos ---
         let showFingerTips = false;
 
         const NUM_POINTS = 20;
@@ -33,7 +37,6 @@
         const TENSION = 0.5;
         const FINGER_TIPS = [4, 8, 12, 16, 20];
 
-        // --- CAMBIO 2: Función para activar la visibilidad una sola vez ---
         function activateTrackingVisibility() {
             showFingerTips = true;
             window.removeEventListener('click', activateTrackingVisibility);
@@ -44,7 +47,7 @@
         window.addEventListener('touchstart', activateTrackingVisibility);
 
 
-        // --- CLASES PARA EL MOTOR DE FÍSICA (Sin cambios) ---
+        // --- CLASES DE FÍSICA (Sin cambios) ---
         class Point {
             constructor(x, y) {
                 this.x = x; this.y = y;
@@ -60,7 +63,6 @@
                 this.y += GRAVITY;
             }
         }
-
         class Stick {
             constructor(p1, p2, length) {
                 this.p1 = p1; this.p2 = p2; this.length = length;
@@ -73,12 +75,10 @@
                 const percent = difference / distance / 2 * TENSION;
                 const offsetX = dx * percent;
                 const offsetY = dy * percent;
-
                 if (!this.p1.isPinned) { this.p1.x -= offsetX; this.p1.y -= offsetY; }
                 if (!this.p2.isPinned) { this.p2.x += offsetX; this.p2.y += offsetY; }
             }
         }
-
         class Tendril {
             constructor(x, y) {
                 this.points = []; this.sticks = [];
@@ -134,20 +134,39 @@
         }
         createHandLandmarker();
 
+        // --- ¡CAMBIO CLAVE AQUÍ! ---
+        // Esta función ahora ajusta la proporción correctamente
         function startCamera() {
             navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
                 video.srcObject = stream;
                 video.addEventListener("loadeddata", () => {
-                    canvas.width = window.innerWidth;
-                    canvas.height = window.innerHeight;
+                    // 1. Poner la resolución nativa del video al canvas
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    
+                    // 2. Escalar el canvas con CSS para que llene la ventana (sin "espichar")
+                    const scaleFactor = Math.min(window.innerWidth / video.videoWidth, window.innerHeight / video.videoHeight);
+                    const newWidth = video.videoWidth * scaleFactor;
+                    const newHeight = video.videoHeight * scaleFactor;
+                    
+                    // 3. Centrar el canvas en la pantalla
+                    const newLeft = (window.innerWidth - newWidth) / 2;
+                    const newTop = (window.innerHeight - newHeight) / 2;
+                    
+                    canvas.style.width = `${newWidth}px`;
+                    canvas.style.height = `${newHeight}px`;
+                    canvas.style.left = `${newLeft}px`;
+                    canvas.style.top = `${newTop}px`;
+                    
                     animate();
                 });
-            });
+            }).catch(err => console.error("ERROR:", err));
         }
 
         function animate() {
             ctx.globalCompositeOperation = 'source-over';
             ctx.filter = 'saturate(0.3) brightness(0.8)';
+            // Dibuja el video (ahora el canvas y el video tienen la misma proporción)
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             ctx.filter = 'none';
 
@@ -178,17 +197,15 @@
             }
             tendrils.splice(currentTips.length);
 
-            // --- CAMBIO 3: Dibuja los puntos de las yemas si está activado ---
             if (showFingerTips) {
                 currentTips.forEach(tip => {
                     ctx.beginPath();
-                    ctx.arc(tip.x, tip.y, 8, 0, Math.PI * 2); // Círculo de 8px de radio
-                    ctx.fillStyle = 'rgba(255, 0, 100, 0.85)'; // Color magenta brillante
+                    ctx.arc(tip.x, tip.y, 8, 0, Math.PI * 2);
+                    ctx.fillStyle = 'rgba(255, 0, 100, 0.85)';
                     ctx.shadowColor = 'rgba(255, 0, 100, 1)';
                     ctx.shadowBlur = 15;
                     ctx.fill();
                 });
-                // Restablecer sombra para evitar que afecte a otros dibujos
                 ctx.shadowBlur = 0;
             }
 
