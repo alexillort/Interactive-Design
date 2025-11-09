@@ -50,8 +50,8 @@
             // --- CAMBIO CLAVE: AUMENTAR LA RESOLUCIÓN DE LA SIMULACIÓN ---
             // Reducimos el divisor de 8 a 4 para más "pixels" en la simulación,
             // lo que resulta en ondas más detalladas y menos pixeladas.
-            cols = Math.floor(bgCanvas.width / 4); // Antes: / 8
-            rows = Math.floor(bgCanvas.height / 4); // Antes: / 8
+            cols = Math.floor(bgCanvas.width / 1); // Antes: / 8
+            rows = Math.floor(bgCanvas.height / 1); // Antes: / 8
             
             current = new Array(cols * rows).fill(0);
             previous = new Array(cols * rows).fill(0);
@@ -151,3 +151,4 @@
     </script>
 </body>
 </html>
+
