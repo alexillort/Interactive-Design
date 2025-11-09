@@ -2,16 +2,22 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Aura Mágica con P5.js</title>
+    <title>Aura Mágica Cromática</title>
     <style>
-        body { margin: 0; overflow: hidden; }
-        main { display: flex; justify-content: center; align-items: center; height: 100vh; background-color: #000; cursor: pointer; }
+        body { margin: 0; overflow: hidden; background-color: #000; cursor: pointer; }
+        
+        /* --- CAMBIO 1 (PROPORCIÓN): Estilo del Canvas --- */
+        /* Usamos la misma lógica del script de LEGO para posicionar el canvas */
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            /* El transform de scaleX(-1) se aplicará en p5.js para el modo espejo */
+        }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
 </head>
 <body>
-    <main id="main"></main>
-
     <script type="module">
         import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
 
@@ -38,15 +44,12 @@
             let video;
             let auraLayer;
             let showTrackingPoints = false;
+            let canvasIniciado = false;
 
             p.setup = () => {
-                p.createCanvas(1280, 720).parent('main');
+                // No creamos el canvas aquí, esperamos al video
                 video = p.createCapture(p.VIDEO);
-                video.size(p.width, p.height);
                 video.hide();
-
-                auraLayer = p.createGraphics(p.width, p.height);
-                // La configuración inicial del modo de color se moverá al bucle draw()
             };
             
             p.mousePressed = () => {
@@ -54,6 +57,30 @@
             };
 
             p.draw = () => {
+                // --- CAMBIO 2 (PROPORCIÓN): Lógica de inicialización del LEGO code ---
+                if (!canvasIniciado && video.width > 0) {
+                    // Crea el canvas con el tamaño EXACTO del video
+                    p.createCanvas(video.width, video.height);
+                    auraLayer = p.createGraphics(p.width, p.height);
+
+                    // --- Lógica de escalado del script de LEGO ---
+                    const scaleFactor = p.min(p.windowWidth / video.width, p.windowHeight / video.height);
+                    const newWidth = video.width * scaleFactor;
+                    const newHeight = video.height * scaleFactor;
+                    const newLeft = (p.windowWidth - newWidth) / 2;
+                    const newTop = (p.windowHeight - newHeight) / 2;
+                    
+                    p.canvas.style.width = `${newWidth}px`;
+                    p.canvas.style.height = `${newHeight}px`;
+                    p.canvas.style.left = `${newLeft}px`;
+                    p.canvas.style.top = `${newTop}px`;
+                    // --- Fin de la lógica de escalado ---
+
+                    canvasIniciado = true;
+                }
+                
+                if (!canvasIniciado) { p.background(0); return; }
+
                 if (video.elt.readyState === 4 && handLandmarker) {
                     if (video.elt.currentTime !== lastVideoTime) {
                         lastVideoTime = video.elt.currentTime;
@@ -61,43 +88,49 @@
                     }
                 }
                 
+                // Dibuja el video
                 p.push();
-                p.translate(p.width, 0);
+                p.translate(p.width, 0); // Modo espejo
                 p.scale(-1, 1);
                 p.image(video, 0, 0, p.width, p.height);
                 p.pop();
 
                 auraLayer.clear();
-
-                // --- CORRECCIÓN CLAVE ---
-                // Se debe establecer el modo de color en CADA fotograma,
-                // porque la función .clear() lo resetea al modo RGB por defecto.
                 auraLayer.colorMode(p.HSB, 360, 100, 100); 
-                
                 auraLayer.noStroke();
                 
                 if (detections && detections.landmarks) {
-                    for (const landmarks of detections.landmarks) {
-                        const hue = (p.frameCount * 0.5) % 360; 
+                    // --- CAMBIO 3 (COLOR): Un color base que cambia con el tiempo ---
+                    const baseHue = (p.frameCount * 0.5) % 360; 
+
+                    detections.landmarks.forEach((landmarks, index) => {
+                        // Asigna un color diferente a cada mano (index 0 o 1)
+                        // Mano 1: Tonos cálidos (rojo/naranja)
+                        // Mano 2: Tonos fríos (cian/azul)
+                        const hue = (baseHue + (index * 180)) % 360; 
 
                         for (const point of landmarks) {
-                            auraLayer.fill(hue, 90, 80);
+                            auraLayer.fill(hue, 90, 90); // Rellena con el color dinámico por mano
                             auraLayer.ellipse(point.x * p.width, point.y * p.height, 80, 80);
                         }
-                    }
+                    });
                 }
 
                 auraLayer.filter(p.BLUR, 30);
-                auraLayer.filter(p.THRESHOLD, 0.2);
+                
+                // --- CAMBIO 4 (COLOR): Se quita el filtro THRESHOLD ---
+                // auraLayer.filter(p.THRESHOLD, 0.2); // Esta línea volvía el aura blanca
 
+                // Dibuja la capa del aura
                 p.push();
                 p.translate(p.width, 0);
                 p.scale(-1, 1);
                 p.drawingContext.globalCompositeOperation = 'screen';
-                p.image(auraLayer, 0, 0);
+                p.image(auraLayer, 0, 0, p.width, p.height);
                 p.drawingContext.globalCompositeOperation = 'source-over';
                 p.pop();
 
+                // Dibuja los puntos de seguimiento
                 if (showTrackingPoints && detections && detections.landmarks) {
                     p.push();
                     p.translate(p.width, 0);
