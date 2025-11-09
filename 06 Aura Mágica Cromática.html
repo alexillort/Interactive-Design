@@ -4,13 +4,10 @@
     <meta charset="UTF-8">
     <title>Aura Mágica Cromática</title>
     <style>
-        /* --- CAMBIO 1: Se elimina el estilo de 'main' --- */
         body { margin: 0; overflow: hidden; background-color: #000; cursor: pointer; }
-        
         canvas {
             position: absolute;
             /* top y left se establecerán por JavaScript */
-            /* El transform se aplica en p5.js */
         }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
@@ -47,8 +44,6 @@
             p.setup = () => {
                 video = p.createCapture(p.VIDEO);
                 video.hide();
-                // --- CAMBIO 3: No se especifica .parent() ---
-                // El canvas se creará en p.draw()
             };
             
             p.mousePressed = () => {
@@ -56,15 +51,20 @@
             };
 
             p.draw = () => {
-                // Lógica de inicialización para obtener el tamaño nativo del video
-                if (!canvasIniciado && video.width > 0) {
-                    p.createCanvas(video.width, video.height); // Crea el canvas con la proporción nativa
-                    auraLayer = p.createGraphics(p.width, p.height);
+                // --- ¡CAMBIO CLAVE AQUÍ! ---
+                // Se usan las propiedades .elt.videoWidth y .elt.videoHeight
+                if (!canvasIniciado && video.elt.videoWidth > 0) {
+                    
+                    const vidWidth = video.elt.videoWidth;
+                    const vidHeight = video.elt.videoHeight;
+                    
+                    p.createCanvas(vidWidth, vidHeight); // Crea el canvas con la proporción nativa REAL
+                    auraLayer = p.createGraphics(vidWidth, vidHeight);
 
-                    // --- Lógica de escalado del script de LEGO (¡Esta es la clave!) ---
-                    const scaleFactor = p.min(p.windowWidth / video.width, p.windowHeight / video.height);
-                    const newWidth = video.width * scaleFactor;
-                    const newHeight = video.height * scaleFactor;
+                    // Lógica de escalado del script de LEGO
+                    const scaleFactor = p.min(p.windowWidth / vidWidth, p.windowHeight / vidHeight);
+                    const newWidth = vidWidth * scaleFactor;
+                    const newHeight = vidHeight * scaleFactor;
                     const newLeft = (p.windowWidth - newWidth) / 2;
                     const newTop = (p.windowHeight - newHeight) / 2;
                     
@@ -72,12 +72,12 @@
                     p.canvas.style.height = `${newHeight}px`;
                     p.canvas.style.left = `${newLeft}px`;
                     p.canvas.style.top = `${newTop}px`;
-                    // --- Fin de la lógica de escalado ---
+                    // --- Fin del cambio ---
 
                     canvasIniciado = true;
                 }
                 
-                if (!canvasIniciado) { p.background(0); return; } // Espera a que el canvas esté listo
+                if (!canvasIniciado) { p.background(0); return; }
 
                 if (video.elt.readyState === 4 && handLandmarker) {
                     if (video.elt.currentTime !== lastVideoTime) {
@@ -99,13 +99,8 @@
                 
                 if (detections && detections.landmarks) {
                     const baseHue = (p.frameCount * 0.5) % 360; 
-
                     detections.landmarks.forEach((landmarks, index) => {
-                        // Asigna un color diferente a cada mano (index 0 o 1)
-                        // Mano 1: Tonos cálidos (ej. 0 + 0 = 0 -> rojo)
-                        // Mano 2: Tonos fríos (ej. 0 + 180 = 180 -> cian)
                         const hue = (baseHue + (index * 180)) % 360; 
-
                         for (const point of landmarks) {
                             auraLayer.fill(hue, 90, 90);
                             auraLayer.ellipse(point.x * p.width, point.y * p.height, 80, 80);
