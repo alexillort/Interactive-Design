@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Aura Mágica Cromática</title>
+    <title>Aura Cromática</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; cursor: pointer; }
         canvas {
@@ -51,17 +51,16 @@
             };
 
             p.draw = () => {
-                // --- ¡CAMBIO CLAVE AQUÍ! ---
-                // Se usan las propiedades .elt.videoWidth y .elt.videoHeight
+                // --- CORRECCIÓN DE PROPORCIÓN ---
                 if (!canvasIniciado && video.elt.videoWidth > 0) {
                     
                     const vidWidth = video.elt.videoWidth;
                     const vidHeight = video.elt.videoHeight;
                     
-                    p.createCanvas(vidWidth, vidHeight); // Crea el canvas con la proporción nativa REAL
+                    p.createCanvas(vidWidth, vidHeight); // Canvas con proporción nativa real
                     auraLayer = p.createGraphics(vidWidth, vidHeight);
 
-                    // Lógica de escalado del script de LEGO
+                    // Lógica de escalado
                     const scaleFactor = p.min(p.windowWidth / vidWidth, p.windowHeight / vidHeight);
                     const newWidth = vidWidth * scaleFactor;
                     const newHeight = vidHeight * scaleFactor;
@@ -72,7 +71,6 @@
                     p.canvas.style.height = `${newHeight}px`;
                     p.canvas.style.left = `${newLeft}px`;
                     p.canvas.style.top = `${newTop}px`;
-                    // --- Fin del cambio ---
 
                     canvasIniciado = true;
                 }
@@ -98,17 +96,21 @@
                 auraLayer.noStroke();
                 
                 if (detections && detections.landmarks) {
-                    const baseHue = (p.frameCount * 0.5) % 360; 
+                    // --- CAMBIO: Velocidad de color aumentada ---
+                    const baseHue = (p.frameCount * 1.5) % 360; 
+
                     detections.landmarks.forEach((landmarks, index) => {
                         const hue = (baseHue + (index * 180)) % 360; 
                         for (const point of landmarks) {
-                            auraLayer.fill(hue, 90, 90);
-                            auraLayer.ellipse(point.x * p.width, point.y * p.height, 80, 80);
+                            // --- CAMBIO: Color más brillante y aura más grande ---
+                            auraLayer.fill(hue, 100, 100); // 100% saturación y brillo
+                            auraLayer.ellipse(point.x * p.width, point.y * p.height, 100, 100); // Tamaño 100
                         }
                     });
                 }
 
-                auraLayer.filter(p.BLUR, 30);
+                // --- CAMBIO: Blur más notable ---
+                auraLayer.filter(p.BLUR, 45); // Aumentado de 30 a 45
                 
                 // Dibuja la capa del aura
                 p.push();
@@ -128,7 +130,8 @@
                         for (const point of landmarks) {
                             p.fill(255);
                             p.noStroke();
-                            p.ellipse(point.x * p.width, point.y * p.height, 10, 10);
+                            // --- CORRECCIÓN: Puntos de tracking devueltos a tamaño 10 ---
+                            p.ellipse(point.x * p.width, point.y * p.height, 60, 60);
                         }
                     }
                     p.pop();
