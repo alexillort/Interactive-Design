@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Campo de Fuerza Elástico</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); }
+        #background-canvas { 
+            z-index: 1;
+            filter: brightness(0.4) saturate(0.2); /* Fondo oscuro y desaturado */
+        }
+        #interaction-canvas { z-index: 2; }
+        #input_video { display: none; } 
+    </style>
+</head>
+<body>
+    <video id="input_video" autoplay playsinline></video>
+    <canvas id="background-canvas"></canvas>
+    <canvas id="interaction-canvas"></canvas>
+
+    <script type="module">
+        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+        const video = document.getElementById("input_video");
+        const bgCanvas = document.getElementById("background-canvas");
+        const bgCtx = bgCanvas.getContext("2d");
+        const intCanvas = document.getElementById("interaction-canvas");
+        const intCtx = intCanvas.getContext("2d");
+        
+        let handLandmarker;
+        let grid = [];
+        const GRID_SIZE = 25; // Puntos de la cuadrícula (más pequeño = más denso)
+
+        // --- PARÁMETROS DE FÍSICA ---
+        const STIFFNESS = 0.1;   // Rigidez (cuán rápido vuelve a su lugar)
+        const DAMPING = 0.85;      // Fricción (para que no vibre para siempre)
+        const REPULSION_RADIUS = 100; // Radio de empuje de la mano
+        const REPULSION_STRENGTH = 15;  // Fuerza de empuje
+
+        // --- CLASE PARA CADA PUNTO DE LA CUADRÍCULA ---
+        class Point {
+            constructor(x, y) {
+                this.anchorX = x; // Posición original
+                this.anchorY = y;
+                this.x = x;
+                this.y = y;
+                this.vx = 0; // Velocidad X
+                this.vy = 0; // Velocidad Y
+            }
+
+            update(attractors) {
+                // 1. Fuerza de repulsión de las manos
+                attractors.forEach(point => {
+                    const dx = this.x - point.x;
+                    const dy = this.y - point.y;
+                    const distSq = dx * dx + dy * dy;
+
+                    if (distSq < REPULSION_RADIUS * REPULSION_RADIUS) {
+                        const dist = Math.sqrt(distSq);
+                        const force = (1 - (dist / REPULSION_RADIUS)) * REPULSION_STRENGTH;
+                        this.vx += (dx / dist) * force;
+                        this.vy += (dy / dist) * force;
+                    }
+                });
+
+                // 2. Fuerza de resorte (volver al ancla)
+                const dxToAnchor = this.anchorX - this.x;
+                const dyToAnchor = this.anchorY - this.y;
+                this.vx += dxToAnchor * STIFFNESS;
+                this.vy += dyToAnchor * STIFFNESS;
+
+                // 3. Aplicar fricción y mover
+                this.vx *= DAMPING;
+                this.vy *= DAMPING;
+                this.x += this.vx;
+                this.y += this.vy;
+            }
+        }
+
+        function initGrid() {
+            grid = [];
+            for (let y = 0; y < intCanvas.height; y += GRID_SIZE) {
+                let row = [];
+                for (let x = 0; x < intCanvas.width; x += GRID_SIZE) {
+                    row.push(new Point(x, y));
+                }
+                grid.push(row);
+            }
+        }
+
+        async function createHandLandmarker() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, { 
+                baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
+                runningMode: "VIDEO", 
+                numHands: 2 
+            });
+            startCamera();
+        }
+        createHandLandmarker();
+
+        function startCamera() {
+            navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", () => {
+                    [bgCanvas, intCanvas].forEach(c => { c.width = video.videoWidth; c.height = video.videoHeight; });
+                    const scaleFactor = Math.min(window.innerWidth / video.videoWidth, window.innerHeight / video.videoHeight);
+                    const newWidth = video.videoWidth * scaleFactor;
+                    const newHeight = video.videoHeight * scaleFactor;
+                    const newLeft = (window.innerWidth - newWidth) / 2;
+                    const newTop = (window.innerHeight - newHeight) / 2;
+                    [bgCanvas, intCanvas].forEach(c => { 
+                        c.style.width = `${newWidth}px`; 
+                        c.style.height = `${newHeight}px`;
+                        c.style.left = `${newLeft}px`;
+                        c.style.top = `${newTop}px`;
+                    });
+                    
+                    initGrid(); // Inicializa la cuadrícula con el tamaño correcto
+                    animate();
+                });
+            });
+        }
+
+        function animate() {
+            bgCtx.drawImage(video, 0, 0, bgCanvas.width, bgCanvas.height);
+            intCtx.clearRect(0, 0, intCanvas.width, intCanvas.height);
+
+            let attractors = [];
+            if (handLandmarker) {
+                const results = handLandmarker.detectForVideo(video, performance.now());
+                if (results.landmarks && results.landmarks.length > 0) {
+                    for (const landmarks of results.landmarks) {
+                        for (const point of landmarks) {
+                            attractors.push({ x: point.x * intCanvas.width, y: point.y * intCanvas.height });
+                        }
+                    }
+                }
+            }
+
+            // Actualiza la física de cada punto
+            for (let y = 0; y < grid.length; y++) {
+                for (let x = 0; x < grid[y].length; x++) {
+                    grid[y][x].update(attractors);
+                }
+            }
+
+            // Dibuja las líneas de la malla
+            intCtx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+            intCtx.lineWidth = 1;
+            for (let y = 0; y < grid.length - 1; y++) {
+                for (let x = 0; x < grid[y].length - 1; x++) {
+                    const p1 = grid[y][x];
+                    const p2 = grid[y][x+1];
+                    const p3 = grid[y+1][x];
+
+                    // Dibuja línea horizontal
+                    intCtx.beginPath();
+                    intCtx.moveTo(p1.x, p1.y);
+                    intCtx.lineTo(p2.x, p2.y);
+                    intCtx.stroke();
+
+                    // Dibuja línea vertical
+                    intCtx.beginPath();
+                    intCtx.moveTo(p1.x, p1.y);
+                    intCtx.lineTo(p3.x, p3.y);
+                    intCtx.stroke();
+                }
+            }
+
+            requestAnimationFrame(animate);
+        }
+    </script>
+</body>
+</html>
