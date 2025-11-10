@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Tejedor Cósmico de Partículas</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        #container { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; }
+        #input_video { display: none; }
+        #loading-message {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: white; font-family: Arial, sans-serif;
+            font-size: 1.2em; text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading-message">Cargando MediaPipe y cámara...</div>
+    <video id="input_video" autoplay playsinline></video>
+    <div id="container"></div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.164.1/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.164.1/examples/jsm/"
+        }
+    }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+        let handLandmarker, scene, camera, renderer, composer, videoTexture, backgroundPlane;
+        const video = document.getElementById("input_video");
+        const container = document.getElementById("container");
+        const loadingMessage = document.getElementById('loading-message');
+
+        const NUM_HANDS = 2;
+        // --- CAMBIO CLAVE: Variable que faltaba añadida ---
+        const NUM_LANDMARKS = 21; // Cada mano tiene 21 puntos
+        
+        const EMITTER_POINTS = [0, 5, 9, 13, 17]; // Muñeca y bases de los dedos
+        const MAX_PARTICLES_PER_HAND = 1500;
+        const PARTICLES_PER_FRAME = 2;
+        const MAX_CONNECTIONS = 10000;
+        const CONNECTION_DISTANCE = 3.0;
+        const PARTICLE_ATTRACTION = 0.01;
+        const PARTICLE_LIFETIME = 300;
+        const PARTICLE_SPEED = 0.5;
+        const DAMPING = 0.98;
+        const INTER_HAND_ATTRACTION_RADIUS = 8;
+        const INTER_HAND_ATTRACTION_STRENGTH = 0.05;
+
+        const BASE_COLOR_HSL = { h: 0.6, s: 1.0, l: 0.5 };
+        const SPEED_COLOR_CHANGE = 0.1;
+        const CONNECTION_COLOR_BLEND = 0.2;
+
+        let allParticles = [];
+        let particlesPool = [];
+        let activeParticles = 0;
+        let lastHandPos = [new THREE.Vector3(), new THREE.Vector3()];
+        let handVelocity = [new THREE.Vector3(), new THREE.Vector3()];
+        // Esta línea ahora funcionará
+        let handLandmarkPositions = [new Array(NUM_LANDMARKS), new Array(NUM_LANDMARKS)];
+
+        let particlePositions, particleColors;
+        let particleSystem;
+        let connectionPositions, connectionColors;
+        let connectionSystem;
+
+        class Particle {
+            constructor(index) {
+                this.index = index;
+                this.pos = new THREE.Vector3();
+                this.vel = new THREE.Vector3();
+                this.baseColor = new THREE.Color();
+                this.lifetime = 0;
+                this.maxLifetime = 0;
+                this.isActive = false;
+            }
+
+            init(position, velocity, color, maxLifetime) {
+                this.pos.copy(position);
+                this.vel.copy(velocity);
+                this.baseColor.copy(color);
+                this.lifetime = maxLifetime;
+                this.maxLifetime = maxLifetime;
+                this.isActive = true;
+            }
+
+            update(damping, handAttractors, globalAttractor) {
+                if (!this.isActive) return;
+
+                this.lifetime--;
+                if (this.lifetime <= 0) {
+                    this.isActive = false;
+                    return;
+                }
+
+                handAttractors.forEach((attractorPos, handIndex) => {
+                    const distSq = this.pos.distanceToSquared(attractorPos);
+                    if (distSq < INTER_HAND_ATTRACTION_RADIUS * INTER_HAND_ATTRACTION_RADIUS && distSq > 0.1) {
+                        const forceDirection = new THREE.Vector3().subVectors(attractorPos, this.pos).normalize();
+                        this.vel.add(forceDirection.multiplyScalar(INTER_HAND_ATTRACTION_STRENGTH * (1 - distSq / (INTER_HAND_ATTRACTION_RADIUS * INTER_HAND_ATTRACTION_RADIUS))));
+                    }
+                });
+
+                this.vel.multiplyScalar(damping);
+                this.pos.add(this.vel);
+            }
+
+            updateBuffers(positionsArray, colorsArray) {
+                if (!this.isActive) {
+                    positionsArray[this.index * 3] = 0;
+                    positionsArray[this.index * 3 + 1] = 0;
+                    positionsArray[this.index * 3 + 2] = -1000;
+                    colorsArray[this.index * 3] = 0;
+                    colorsArray[this.index * 3 + 1] = 0;
+                    colorsArray[this.index * 3 + 2] = 0;
+                    return;
+                }
+
+                positionsArray[this.index * 3] = this.pos.x;
+                positionsArray[this.index * 3 + 1] = this.pos.y;
+                positionsArray[this.index * 3 + 2] = this.pos.z;
+
+                const lifeRatio = this.lifetime / this.maxLifetime;
+                const tempColor = this.baseColor.clone().multiplyScalar(lifeRatio * lifeRatio);
+                colorsArray[this.index * 3] = tempColor.r;
+                colorsArray[this.index * 3 + 1] = tempColor.g;
+                colorsArray[this.index * 3 + 2] = tempColor.b;
+            }
+        }
+
+        async function setupMediapipe() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
+                runningMode: "VIDEO",
+                numHands: NUM_HANDS
+            });
+            startCamera();
+        }
+
+        function startCamera() {
+            navigator.mediaDevices.getUserMedia({ video: { width: {ideal: 1280}, height: {ideal: 720} } }).then(stream => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", () => {
+                    video.width = video.videoWidth;
+                    video.height = video.videoHeight;
+                    loadingMessage.style.display = 'none';
+                    setupThreeJS();
+                    animate();
+                });
+            }).catch(error => {
+                console.error("Error al acceder a la cámara:", error);
+                loadingMessage.textContent = "Error: No se pudo acceder a la cámara.";
+            });
+        }
+
+        function setupThreeJS() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 100;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, canvas: container.appendChild(document.createElement('canvas')) });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            
+            videoTexture = new THREE.VideoTexture(video);
+            videoTexture.minFilter = THREE.LinearFilter;
+            videoTexture.magFilter = THREE.LinearFilter;
+            videoTexture.wrapS = THREE.RepeatWrapping;
+            videoTexture.repeat.x = -1; 
+            
+            const planeGeo = new THREE.PlaneGeometry(1, 1);
+            const planeMat = new THREE.MeshBasicMaterial({ map: videoTexture, color: 0x222222 });
+            backgroundPlane = new THREE.Mesh(planeGeo, planeMat);
+            scene.add(backgroundPlane);
+
+            const particleGeometry = new THREE.BufferGeometry();
+            particlePositions = new Float32Array(MAX_PARTICLES_PER_HAND * NUM_HANDS * 3);
+            particleColors = new Float32Array(MAX_PARTICLES_PER_HAND * NUM_HANDS * 3);
+            particleGeometry.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
+            particleGeometry.setAttribute('color', new THREE.BufferAttribute(particleColors, 3));
+            const particleMaterial = new THREE.PointsMaterial({
+                vertexColors: true,
+                size: 0.5,
+                blending: THREE.AdditiveBlending,
+                transparent: true,
+                depthWrite: false,
+                sizeAttenuation: true
+            });
+            particleSystem = new THREE.Points(particleGeometry, particleMaterial);
+            scene.add(particleSystem);
+
+            const connectionGeometry = new THREE.BufferGeometry();
+            connectionPositions = new Float32Array(MAX_CONNECTIONS * 2 * 3);
+            connectionColors = new Float32Array(MAX_CONNECTIONS * 2 * 3);
+            connectionGeometry.setAttribute('position', new THREE.BufferAttribute(connectionPositions, 3));
+            connectionGeometry.setAttribute('color', new THREE.BufferAttribute(connectionColors, 3));
+            const connectionMaterial = new THREE.LineBasicMaterial({
+                vertexColors: true,
+                blending: THREE.AdditiveBlending,
+                transparent: true,
+                depthWrite: false
+            });
+            connectionSystem = new THREE.LineSegments(connectionGeometry, connectionMaterial);
+            scene.add(connectionSystem);
+
+            for (let i = 0; i < MAX_PARTICLES_PER_HAND * NUM_HANDS; i++) {
+                const particle = new Particle(i);
+                allParticles.push(particle);
+                particlesPool.push(particle);
+            }
+            
+            const renderScene = new RenderPass(scene, camera);
+            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.5, 0.85); 
+            bloomPass.threshold = 0;
+            bloomPass.strength = 1.0;
+            bloomPass.radius = 0.5;
+            composer = new EffectComposer(renderer);
+            composer.addPass(renderScene);
+            composer.addPass(bloomPass);
+
+            window.addEventListener('resize', onWindowResize);
+            onWindowResize();
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+            
+            if (backgroundPlane) {
+                const vFOV = THREE.MathUtils.degToRad(camera.fov);
+                const planeHeight = 2 * Math.tan(vFOV / 2) * Math.abs(camera.position.z);
+                const planeWidth = planeHeight * camera.aspect;
+                backgroundPlane.scale.set(planeWidth, planeHeight, 1);
+            }
+        }
+        
+        function mapTo3DWorld(point, zOffset = 0) {
+            const z = zOffset; 
+            const vFOV = THREE.MathUtils.degToRad(camera.fov);
+            const height = 2 * Math.tan(vFOV / 2) * Math.abs(camera.position.z - z);
+            const width = height * camera.aspect;
+            
+            const vec = new THREE.Vector3();
+            vec.x = (1.0 - point.x - 0.5) * width;
+            vec.y = -(point.y - 0.5) * height;
+            vec.z = z;
+            return vec;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const results = handLandmarker?.detectForVideo(video, performance.now());
+            
+            let handAttractors = [];
+            activeParticles = 0;
+            
+            // Poner todos los landmarks en un array plano para fácil acceso
+            let allLandmarkPositions = [];
+
+            if (results?.landmarks) {
+                results.landmarks.forEach((landmarks, handIndex) => {
+                    const wristPos = mapTo3DWorld(landmarks[0], 0);
+                    handAttractors[handIndex] = mapTo3DWorld(landmarks[9], 0);
+
+                    handVelocity[handIndex].subVectors(wristPos, lastHandPos[handIndex]);
+                    lastHandPos[handIndex].copy(wristPos);
+                    const speed = handVelocity[handIndex].length();
+                    
+                    landmarks.forEach((landmark, i) => {
+                        const pos = mapTo3DWorld(landmark, 0);
+                        handLandmarkPositions[handIndex][i] = pos;
+                        allLandmarkPositions.push(pos); // Añadir a la lista global
+                    });
+
+                    EMITTER_POINTS.forEach(landmarkIndex => {
+                        const emitterPos = handLandmarkPositions[handIndex][landmarkIndex];
+                        if (emitterPos) {
+                            for (let i = 0; i < PARTICLES_PER_FRAME; i++) {
+                                if (particlesPool.length > 0) {
+                                    const particle = particlesPool.shift();
+                                    const initialVel = new THREE.Vector3().randomDirection().multiplyScalar(PARTICLE_SPEED);
+                                    
+                                    const colorHue = (BASE_COLOR_HSL.h + speed * SPEED_COLOR_CHANGE) % 1.0;
+                                    const particleColor = new THREE.Color().setHSL(colorHue, BASE_COLOR_HSL.s, BASE_COLOR_HSL.l);
+                                    
+                                    particle.init(emitterPos, initialVel, particleColor, PARTICLE_LIFETIME * (0.8 + Math.random() * 0.4));
+                                }
+                            }
+                        }
+                    });
+                });
+            }
+
+            let currentConnection = 0;
+            const tempActiveParticles = []; // Almacena partículas activas para este frame
+            allParticles.forEach(p => {
+                if (p.isActive) {
+                    p.update(DAMPING, handAttractors);
+                    p.updateBuffers(particlePositions, particleColors);
+                    tempActiveParticles.push(p); // Añadir a la lista de activas
+                    activeParticles++;
+                } else if (!particlesPool.includes(p)) {
+                    particlesPool.push(p);
+                }
+            });
+
+            // --- Forjar conexiones entre partículas (optimizado) ---
+            for (let i = 0; i < tempActiveParticles.length; i++) {
+                if (currentConnection >= MAX_CONNECTIONS) break;
+                
+                const pA = tempActiveParticles[i];
+                
+                // Conectar a los puntos de la mano más cercanos
+                allLandmarkPositions.forEach(landmarkPos => {
+                    if (currentConnection >= MAX_CONNECTIONS) return;
+                    const distance = pA.pos.distanceTo(landmarkPos);
+                    if (distance < CONNECTION_DISTANCE) {
+                        const idx = currentConnection * 6;
+                        pA.pos.toArray(connectionPositions, idx);
+                        landmarkPos.toArray(connectionPositions, idx + 3);
+
+                        const colorA = pA.baseColor.clone().lerp(new THREE.Color(0xFFFFFF), CONNECTION_COLOR_BLEND);
+                        const colorB = new THREE.Color(0xFFFFFF); // Puntos de la mano son blancos
+                        
+                        (colorA.multiplyScalar(pA.lifetime / pA.maxLifetime)).toArray(connectionColors, idx);
+                        colorB.toArray(connectionColors, idx + 3);
+                        
+                        currentConnection++;
+                    }
+                });
+
+                // Conectar a otras partículas (menos denso para rendimiento)
+                if (i % 5 === 0) { // Solo chequear 1 de cada 5 partículas
+                    for (let j = i + 1; j < tempActiveParticles.length; j += 5) { // Solo chequear 1 de cada 5
+                        if (currentConnection >= MAX_CONNECTIONS) break;
+                        const pB = tempActiveParticles[j];
+                        const distance = pA.pos.distanceTo(pB.pos);
+
+                        if (distance < CONNECTION_DISTANCE) {
+                            const idx = currentConnection * 6;
+                            pA.pos.toArray(connectionPositions, idx);
+                            pB.pos.toArray(connectionPositions, idx + 3);
+                            
+                            const colorA = pA.baseColor.clone().lerp(new THREE.Color(0xFFFFFF), CONNECTION_COLOR_BLEND);
+                            const colorB = pB.baseColor.clone().lerp(new THREE.Color(0xFFFFFF), CONNECTION_COLOR_BLEND);
+                            
+                            (colorA.multiplyScalar(pA.lifetime / pA.maxLifetime)).toArray(connectionColors, idx);
+                            (colorB.multiplyScalar(pB.lifetime / pB.maxLifetime)).toArray(connectionColors, idx + 3);
+                            
+                            currentConnection++;
+                        }
+                    }
+                }
+            }
+
+            for (let i = currentConnection; i < MAX_CONNECTIONS; i++) {
+                const idx = i * 6;
+                connectionPositions[idx] = 0; connectionPositions[idx+1] = 0; connectionPositions[idx+2] = -1000;
+                connectionPositions[idx+3] = 0; connectionPositions[idx+4] = 0; connectionPositions[idx+5] = -1000;
+            }
+
+            particleSystem.geometry.attributes.position.needsUpdate = true;
+            particleSystem.geometry.attributes.color.needsUpdate = true;
+            connectionSystem.geometry.attributes.position.needsUpdate = true;
+            connectionSystem.geometry.attributes.color.needsUpdate = true;
+            connectionSystem.geometry.setDrawRange(0, currentConnection * 2);
+
+            composer.render();
+        }
+
+        setupMediapipe();
+    </script>
+</body>
+</html>
