@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Fuegos Artificiales Dinámicos Puros</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        #container { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; }
+        #input_video { display: none; }
+        #loading-message {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: white; font-family: Arial, sans-serif;
+            font-size: 1.2em; text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading-message">Cargando MediaPipe y cámara...</div>
+    <video id="input_video" autoplay playsinline></video>
+    <div id="container"></div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.164.1/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.164.1/examples/jsm/"
+        }
+    }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+        let handLandmarker, scene, camera, renderer, composer, videoTexture, backgroundPlane;
+        const video = document.getElementById("input_video");
+        const container = document.getElementById("container");
+        const loadingMessage = document.getElementById('loading-message');
+
+        const NUM_HANDS = 2;
+        const NUM_LANDMARKS = 21;
+        const MAX_PARTICLES = 50000; // ¡Incrementado drásticamente para más robustez!
+        const PARTICLE_TRAIL_LENGTH = 8;
+        const MAX_CONNECTIONS = 60000; // ¡Incrementado también!
+        const CONNECTION_DISTANCE = 3.5;
+        const PARTICLE_LIFETIME = 200;
+        const DAMPING = 0.99;
+        const GESTURE_THRESHOLD = 0.18;
+
+        // --- Fuegos Artificiales ---
+        const FIREWORK_PARTICLES_PER_EXPLOSION = 200;
+        const FIREWORK_EXPLOSION_FORCE = 1.5;
+        const FIREWORK_GRAVITY = 0.04;
+
+        // --- Colores ---
+        const FIREWORK_COLOR_PALETTES = [
+            [{h:0.0, s:1.0, l:0.7}, {h:0.1, s:1.0, l:0.6}, {h:0.05, s:0.8, l:0.5}], // Rojos/Naranjas
+            [{h:0.5, s:1.0, l:0.7}, {h:0.6, s:1.0, l:0.6}, {h:0.55, s:0.8, l:0.5}], // Azules/Cianes
+            [{h:0.3, s:1.0, l:0.7}, {h:0.4, s:1.0, l:0.6}, {h:0.35, s:0.8, l:0.5}], // Verdes/Amarillos
+            [{h:0.8, s:1.0, l:0.7}, {h:0.9, s:1.0, l:0.6}, {h:0.85, s:0.8, l:0.5}],  // Magenta/Rosas
+            [{h:0.7, s:0.7, l:0.8}, {h:0.75, s:0.6, l:0.9}, {h:0.65, s:0.8, l:0.7}], // Blancos/Púrpuras suaves
+        ];
+        const CONNECTION_COLOR_BLEND = 0.2;
+
+        // --- Variables de estado ---
+        let allParticles = [];
+        let particlesPool = [];
+        let activeParticlesCount = 0;
+        let wasFist = [false, false]; // Para detectar cambio de gesto
+
+        let particleVertexPositions, particleVertexColors;
+        let particleTrailSystem;
+        let connectionPositions, connectionColors;
+        let connectionSystem;
+
+        // --- Clase de Partícula GENÉRICA ---
+        class Particle {
+            constructor(index) {
+                this.index = index;
+                this.trailPositions = [];
+                for(let i=0; i < PARTICLE_TRAIL_LENGTH; i++) {
+                    this.trailPositions.push(new THREE.Vector3());
+                }
+                this.vel = new THREE.Vector3();
+                this.baseColor = new THREE.Color();
+                this.lifetime = 0;
+                this.maxLifetime = 0;
+                this.isActive = false;
+                this.parentExplosionId = -1; // Para agrupar partículas de una misma explosión
+            }
+
+            init(position, velocity, color, maxLifetime, parentExplosionId = -1) {
+                this.trailPositions.forEach(p => p.copy(position));
+                this.vel.copy(velocity);
+                this.baseColor.copy(color);
+                this.lifetime = maxLifetime;
+                this.maxLifetime = maxLifetime;
+                this.isActive = true;
+                this.parentExplosionId = parentExplosionId;
+            }
+
+            update(deltaTime) {
+                if (!this.isActive) return;
+
+                this.lifetime -= deltaTime;
+                if (this.lifetime <= 0) {
+                    this.isActive = false;
+                    return;
+                }
+
+                for(let i = this.trailPositions.length - 1; i > 0; i--) {
+                    this.trailPositions[i].copy(this.trailPositions[i-1]);
+                }
+                this.trailPositions[0].add(this.vel.clone().multiplyScalar(deltaTime));
+                
+                this.vel.y -= FIREWORK_GRAVITY * deltaTime;
+                
+                this.vel.multiplyScalar(DAMPING);
+            }
+
+            updateBuffers(positionsArray, colorsArray) {
+                if (!this.isActive) {
+                    for(let i = 0; i < PARTICLE_TRAIL_LENGTH * 2; i++) {
+                        const idx = (this.index * (PARTICLE_TRAIL_LENGTH -1) * 2 + i) * 3;
+                        positionsArray[idx] = positionsArray[idx+1] = positionsArray[idx+2] = -1000;
+                        colorsArray[idx] = colorsArray[idx+1] = colorsArray[idx+2] = 0;
+                    }
+                    return;
+                }
+
+                const lifeRatio = this.lifetime / this.maxLifetime;
+                for(let i = 0; i < PARTICLE_TRAIL_LENGTH - 1; i++) {
+                    const currentPos = this.trailPositions[i];
+                    const nextPos = this.trailPositions[i+1];
+                    const idx = (this.index * (PARTICLE_TRAIL_LENGTH - 1) * 2 + i * 2) * 3;
+                    
+                    currentPos.toArray(positionsArray, idx);
+                    nextPos.toArray(positionsArray, idx + 3);
+
+                    const segmentLifeRatio = lifeRatio * (1 - (i / (PARTICLE_TRAIL_LENGTH * 0.7)));
+                    const tempColor = this.baseColor.clone().multiplyScalar(segmentLifeRatio * segmentLifeRatio);
+                    
+                    tempColor.toArray(colorsArray, idx);
+                    tempColor.toArray(colorsArray, idx + 3);
+                }
+            }
+        }
+
+        // --- La clase ExplosionSphere ha sido eliminada ya que no necesitamos la visualización del mesh ---
+        // Su función de proporcionar un ID para agrupar partículas se integrará directamente.
+
+        async function setupMediapipe() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
+                runningMode: "VIDEO",
+                numHands: NUM_HANDS
+            });
+            startCamera();
+        }
+
+        function startCamera() {
+            navigator.mediaDevices.getUserMedia({ video: { width: {ideal: 1280}, height: {ideal: 720} } }).then(stream => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", () => {
+                    video.width = video.videoWidth;
+                    video.height = video.videoHeight;
+                    loadingMessage.style.display = 'none';
+                    setupThreeJS();
+                    animate();
+                });
+            }).catch(error => {
+                console.error("Error al acceder a la cámara:", error);
+                loadingMessage.textContent = "Error: No se pudo acceder a la cámara.";
+            });
+        }
+
+        function setupThreeJS() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 100;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, canvas: container.appendChild(document.createElement('canvas')) });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            
+            videoTexture = new THREE.VideoTexture(video);
+            videoTexture.minFilter = THREE.LinearFilter;
+            videoTexture.magFilter = THREE.LinearFilter;
+            videoTexture.wrapS = THREE.RepeatWrapping;
+            videoTexture.repeat.x = -1; 
+            
+            const planeGeo = new THREE.PlaneGeometry(1, 1);
+            const planeMat = new THREE.MeshBasicMaterial({ map: videoTexture, color: 0x050510 }); // Fondo muy oscuro
+            backgroundPlane = new THREE.Mesh(planeGeo, planeMat);
+            scene.add(backgroundPlane);
+
+            const totalParticleSegments = MAX_PARTICLES * (PARTICLE_TRAIL_LENGTH - 1);
+            const particleGeometry = new THREE.BufferGeometry();
+            particleVertexPositions = new Float32Array(totalParticleSegments * 2 * 3);
+            particleVertexColors = new Float32Array(totalParticleSegments * 2 * 3);
+            particleGeometry.setAttribute('position', new THREE.BufferAttribute(particleVertexPositions, 3));
+            particleGeometry.setAttribute('color', new THREE.BufferAttribute(particleVertexColors, 3));
+            const particleMaterial = new THREE.LineBasicMaterial({
+                vertexColors: true,
+                blending: THREE.AdditiveBlending,
+                transparent: true,
+                depthWrite: false
+            });
+            particleTrailSystem = new THREE.LineSegments(particleGeometry, particleMaterial);
+            scene.add(particleTrailSystem);
+
+            const connectionGeometry = new THREE.BufferGeometry();
+            connectionPositions = new Float32Array(MAX_CONNECTIONS * 2 * 3);
+            connectionColors = new Float32Array(MAX_CONNECTIONS * 2 * 3);
+            connectionGeometry.setAttribute('position', new THREE.BufferAttribute(connectionPositions, 3));
+            connectionGeometry.setAttribute('color', new THREE.BufferAttribute(connectionColors, 3));
+            const connectionMaterial = new THREE.LineBasicMaterial({
+                vertexColors: true,
+                blending: THREE.AdditiveBlending,
+                transparent: true,
+                depthWrite: false,
+                linewidth: 2
+            });
+            connectionSystem = new THREE.LineSegments(connectionGeometry, connectionMaterial);
+            scene.add(connectionSystem);
+
+            for (let i = 0; i < MAX_PARTICLES; i++) {
+                const particle = new Particle(i);
+                allParticles.push(particle);
+                particlesPool.push(particle);
+            }
+            
+            const renderScene = new RenderPass(scene, camera);
+            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.5, 0.85); 
+            bloomPass.threshold = 0;
+            bloomPass.strength = 2.5;
+            bloomPass.radius = 1.2;
+            composer = new EffectComposer(renderer);
+            composer.addPass(renderScene);
+            composer.addPass(bloomPass);
+
+            window.addEventListener('resize', onWindowResize);
+            onWindowResize();
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+            
+            if (backgroundPlane) {
+                const vFOV = THREE.MathUtils.degToRad(camera.fov);
+                const planeHeight = 2 * Math.tan(vFOV / 2) * Math.abs(camera.position.z);
+                const planeWidth = planeHeight * camera.aspect;
+                backgroundPlane.scale.set(planeWidth, planeHeight, 1);
+            }
+        }
+        
+        function mapTo3DWorld(point, zOffset = 0) {
+            const z = zOffset; 
+            const vFOV = THREE.MathUtils.degToRad(camera.fov);
+            const height = 2 * Math.tan(vFOV / 2) * Math.abs(camera.position.z - z);
+            const width = height * camera.aspect;
+            
+            const vec = new THREE.Vector3();
+            vec.x = (1.0 - point.x - 0.5) * width;
+            vec.y = -(point.y - 0.5) * height;
+            vec.z = z;
+            return vec;
+        }
+
+        function detectGesture(landmarks) {
+            const FINGER_TIPS = [4, 8, 12, 16, 20];
+            const palm = landmarks[0];
+            let totalDistance = 0;
+            for (const tipIndex of FINGER_TIPS) {
+                const tip = landmarks[tipIndex];
+                totalDistance += Math.hypot(tip.x - palm.x, tip.y - palm.y, tip.z - palm.z);
+            }
+            return (totalDistance / FINGER_TIPS.length) < GESTURE_THRESHOLD;
+        }
+        
+        let explosionIdCounter = 0;
+
+        function animate() {
+            const deltaTime = 1;
+            requestAnimationFrame(animate);
+            const results = handLandmarker?.detectForVideo(video, performance.now());
+            
+            activeParticlesCount = 0;
+            
+            let currentConnection = 0;
+            for (let i = 0; i < MAX_CONNECTIONS * 2 * 3; i++) connectionPositions[i] = -1000;
+
+            if (results?.landmarks) {
+                results.landmarks.forEach((landmarks, handIndex) => {
+                    const currentIsFist = detectGesture(landmarks);
+                    const palmCenter = mapTo3DWorld(landmarks[9], 0);
+
+                    if (wasFist[handIndex] && !currentIsFist) {
+                        const explosionId = explosionIdCounter++; // Generamos un ID de explosión
+                        const randomPalette = FIREWORK_COLOR_PALETTES[Math.floor(Math.random() * FIREWORK_COLOR_PALETTES.length)];
+                        
+                        // No necesitamos crear un objeto ExplosionSphere si no lo vamos a renderizar.
+                        // Solo el ID es importante para agrupar las partículas.
+                        
+                        for (let i = 0; i < FIREWORK_PARTICLES_PER_EXPLOSION; i++) {
+                            if (particlesPool.length > 0) {
+                                const particle = particlesPool.shift();
+                                let initialVel = new THREE.Vector3().randomDirection().multiplyScalar(FIREWORK_EXPLOSION_FORCE * (0.5 + Math.random() * 0.5));
+                                
+                                const randomColor = randomPalette[Math.floor(Math.random() * randomPalette.length)];
+                                const finalColor = new THREE.Color().setHSL(randomColor.h, randomColor.s, randomColor.l);
+
+                                particle.init(palmCenter, initialVel, finalColor, PARTICLE_LIFETIME * (0.8 + Math.random() * 0.4), explosionId);
+                            }
+                        }
+                    }
+                    wasFist[handIndex] = currentIsFist;
+                });
+            } else {
+                wasFist[0] = wasFist[1] = false;
+            }
+
+            // Ya no hay ExplosionSpheres para actualizar aquí.
+
+            for(let i=0; i < allParticles.length; i++) {
+                const p = allParticles[i];
+                if (p.isActive) {
+                    p.update(deltaTime);
+                    p.updateBuffers(particleVertexPositions, particleVertexColors);
+                    activeParticlesCount++;
+                } else if (!particlesPool.includes(p)) { // Asegurarse de devolver la partícula al pool
+                    particlesPool.push(p);
+                }
+            }
+
+            const particlesByExplosion = new Map();
+            allParticles.filter(p => p.isActive && p.parentExplosionId !== -1).forEach(p => {
+                if (!particlesByExplosion.has(p.parentExplosionId)) {
+                    particlesByExplosion.set(p.parentExplosionId, []);
+                }
+                particlesByExplosion.get(p.parentExplosionId).push(p);
+            });
+
+            particlesByExplosion.forEach(particlesInExplosion => {
+                for (let i = 0; i < particlesInExplosion.length; i++) {
+                    if (currentConnection >= MAX_CONNECTIONS) break;
+                    const pA = particlesInExplosion[i];
+
+                    for (let j = i + 1; j < particlesInExplosion.length && j < i + 5; j++) {
+                        if (currentConnection >= MAX_CONNECTIONS) break;
+                        const pB = particlesInExplosion[j];
+
+                        const distance = pA.trailPositions[0].distanceTo(pB.trailPositions[0]);
+                        if (distance < CONNECTION_DISTANCE * 0.5) {
+                            const idx = currentConnection * 6;
+                            pA.trailPositions[0].toArray(connectionPositions, idx);
+                            pB.trailPositions[0].toArray(connectionPositions, idx + 3);
+                            
+                            const colorA = pA.baseColor.clone().lerp(new THREE.Color(0xFFFFFF), CONNECTION_COLOR_BLEND);
+                            const colorB = pB.baseColor.clone().lerp(new THREE.Color(0xFFFFFF), CONNECTION_COLOR_BLEND);
+                            
+                            (colorA.multiplyScalar(pA.lifetime / pA.maxLifetime)).toArray(connectionColors, idx);
+                            (colorB.multiplyScalar(pB.lifetime / pB.maxLifetime)).toArray(connectionColors, idx + 3);
+                            
+                            currentConnection++;
+                        }
+                    }
+                }
+            });
+
+            particleTrailSystem.geometry.attributes.position.needsUpdate = true;
+            particleTrailSystem.geometry.attributes.color.needsUpdate = true;
+            connectionSystem.geometry.attributes.position.needsUpdate = true;
+            connectionSystem.geometry.attributes.color.needsUpdate = true;
+            connectionSystem.geometry.setDrawRange(0, currentConnection * 2);
+
+            particleTrailSystem.geometry.setDrawRange(0, activeParticlesCount * (PARTICLE_TRAIL_LENGTH - 1) * 2);
+
+            composer.render();
+        }
+
+        setupMediapipe();
+    </script>
+</body>
+</html>
