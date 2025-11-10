@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Red Neuronal Viva</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { position: absolute; top: 0; left: 0; transform: scaleX(-1); }
+        #background-canvas { 
+            z-index: 1;
+            filter: brightness(0.5); /* Oscurece un poco el fondo */
+        }
+        #interaction-canvas { z-index: 2; }
+        #input_video { display: none; } 
+    </style>
+</head>
+<body>
+    <video id="input_video" autoplay playsinline></video>
+    <canvas id="background-canvas"></canvas>
+    <canvas id="interaction-canvas"></canvas>
+
+    <script type="module">
+        import { HandLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+        const video = document.getElementById("input_video");
+        const bgCanvas = document.getElementById("background-canvas");
+        const bgCtx = bgCanvas.getContext("2d");
+        const intCanvas = document.getElementById("interaction-canvas");
+        const intCtx = intCanvas.getContext("2d");
+        
+        let handLandmarker;
+        let particles = [];
+        const NUM_PARTICLES = 1500; // 1500 líneas
+
+        // --- CLASE PARA LOS "NODOS" FLOTANTES ---
+        class NodeParticle {
+            constructor() {
+                this.x = Math.random() * intCanvas.width;
+                this.y = Math.random() * intCanvas.height;
+                // Movimiento lento y errante
+                this.vx = (Math.random() - 0.5) * 0.3;
+                this.vy = (Math.random() - 0.5) * 0.3;
+                this.color = `hsl(${180 + Math.random() * 60}, 100%, 80%)`; // Tonos cian/azul
+            }
+
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+
+                // Si se sale de la pantalla, reaparece en el otro lado
+                if (this.x < 0) this.x = intCanvas.width;
+                if (this.x > intCanvas.width) this.x = 0;
+                if (this.y < 0) this.y = intCanvas.height;
+                if (this.y > intCanvas.height) this.y = 0;
+            }
+            
+            // (La función draw ahora se maneja en el bucle principal)
+        }
+
+        function initParticles() {
+            for (let i = 0; i < NUM_PARTICLES; i++) {
+                particles.push(new NodeParticle());
+            }
+        }
+
+        async function createHandLandmarker() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, { 
+                baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe/models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
+                runningMode: "VIDEO", 
+                numHands: 2 
+            });
+            startCamera();
+        }
+        createHandLandmarker();
+
+        function startCamera() {
+            navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", () => {
+                    [bgCanvas, intCanvas].forEach(c => { c.width = video.videoWidth; c.height = video.videoHeight; });
+                    const scaleFactor = Math.min(window.innerWidth / video.videoWidth, window.innerHeight / video.videoHeight);
+                    const newWidth = video.videoWidth * scaleFactor;
+                    const newHeight = video.videoHeight * scaleFactor;
+                    const newLeft = (window.innerWidth - newWidth) / 2;
+                    const newTop = (window.innerHeight - newHeight) / 2;
+                    [bgCanvas, intCanvas].forEach(c => { 
+                        c.style.width = `${newWidth}px`; 
+                        c.style.height = `${newHeight}px`;
+                        c.style.left = `${newLeft}px`;
+                        c.style.top = `${newTop}px`;
+                    });
+                    
+                    // Inicializa las partículas con el tamaño correcto del canvas
+                    initParticles();
+                    animate();
+                });
+            });
+        }
+
+        function animate() {
+            bgCtx.drawImage(video, 0, 0, bgCanvas.width, bgCanvas.height);
+            // El canvas de interacción se desvanece lentamente para crear estelas de líneas
+            intCtx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+            intCtx.fillRect(0, 0, intCanvas.width, intCanvas.height);
+
+            let attractors = []; // Array de todos los puntos de la mano
+            if (handLandmarker) {
+                const results = handLandmarker.detectForVideo(video, performance.now());
+                if (results.landmarks && results.landmarks.length > 0) {
+                    for (const landmarks of results.landmarks) {
+                        for (const point of landmarks) {
+                            attractors.push({ x: point.x * intCanvas.width, y: point.y * intCanvas.height });
+                        }
+                    }
+                }
+            }
+
+            // Si no hay manos, no se dibujan líneas
+            if (attractors.length === 0) {
+                requestAnimationFrame(animate);
+                return;
+            }
+
+            // --- LÓGICA DE LAS LÍNEAS ---
+            particles.forEach(p => {
+                p.update(); // Mueve la partícula
+                
+                // 1. Encontrar el atractor (punto de la mano) más cercano
+                let minDist = Infinity;
+                let nearestAttractor = null;
+                for (const attractor of attractors) {
+                    const dx = p.x - attractor.x;
+                    const dy = p.y - attractor.y;
+                    const dist = dx * dx + dy * dy; // Usamos distSq para más eficiencia
+                    if (dist < minDist) {
+                        minDist = dist;
+                        nearestAttractor = attractor;
+                    }
+                }
+                
+                // 2. Dibujar la línea desde la partícula hasta el punto de la mano
+                if (nearestAttractor) {
+                    const distance = Math.sqrt(minDist);
+                    const alpha = Math.max(0, 1 - distance / 300); // La línea es más brillante si está cerca
+                    
+                    intCtx.beginPath();
+                    intCtx.moveTo(p.x, p.y);
+                    intCtx.lineTo(nearestAttractor.x, nearestAttractor.y);
+                    intCtx.strokeStyle = `hsla(${180 + distance * 0.5}, 100%, 75%, ${alpha * 0.5})`;
+                    intCtx.lineWidth = 0.5;
+                    intCtx.stroke();
+                }
+            });
+
+            requestAnimationFrame(animate);
+        }
+    </script>
+</body>
+</html>
