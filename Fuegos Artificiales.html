@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Firework</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        #webcam { display: none; transform: scaleX(-1); } /* Video en modo espejo */
+        #threejs-canvas { display: block; }
+        #loading-message {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: white; font-family: Arial, sans-serif;
+            font-size: 1.2em; text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading-message">Cargando MediaPipe y cámara...</div>
+    <video id="webcam" autoplay playsinline></video>
+    <canvas id="threejs-canvas"></canvas>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+    
+    <script type="module">
+        import * as THREE from 'three';
+        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+        let scene, camera, renderer;
+        let particleSystem;
+        
+        // --- CAMBIOS DE OPTIMIZACIÓN ---
+        const NUM_PARTICLES = 1500; // Reducido de 5000. ¡La mayor mejora de rendimiento!
+        const MAX_LIFETIME = 120; // Reducido de 240. Las partículas mueren antes.
+        const PALM_DAMPING = 0.97;  // Aumentado de 0.99. Más fricción, se frenan antes.
+        const NO_HAND_DAMPING = 0.97;
+        const PALM_INITIAL_IMPULSE = 0.15; // Ligeramente más fuerte para compensar
+        // --- FIN DE CAMBIOS DE OPTIMIZACIÓN ---
+
+        const BOUNDS = 20;
+        let handLandmarker;
+        let video;
+        let lastVideoTime = -1;
+        let detections = null;
+
+        const GESTURE_THRESHOLD = 0.15;
+        const FIST_GRAVITY = 2.0;
+        const FIST_DAMPING = 0.85;
+        const PALM_GRAVITY = 0.0;
+        const FIST_CHARGE_RADIUS = 3;
+
+        const FIREWORK_COLORS = [
+            new THREE.Color(0xFFFFFF),
+            new THREE.Color(0xFFD700),
+            new THREE.Color(0xFF4500),
+            new THREE.Color(0x00FFFF),
+            new THREE.Color(0xFF00FF)
+        ];
+        
+        let positions, colors;
+        let particles = [];
+        let currentGravity = 0.0;
+        const attractor = new THREE.Vector3(0, 0, 0);
+        let wasFist = false;
+
+        class Particle {
+            constructor(index) {
+                this.index = index;
+                this.pos = new THREE.Vector3();
+                this.prevPos = new THREE.Vector3();
+                this.vel = new THREE.Vector3();
+                this.color = new THREE.Color();
+                this.lifetime = 0;
+                this.maxLifetime = MAX_LIFETIME * (0.8 + Math.random() * 0.4);
+            }
+
+            resetToCenter() {
+                this.pos.set(0, 0, -1000);
+                this.prevPos.copy(this.pos);
+                this.vel.set(0, 0, 0);
+                this.lifetime = 0;
+                this.updateAttributes();
+            }
+
+            startExplosion(attractorPos, impulseScale) {
+                this.pos.copy(attractorPos).add(new THREE.Vector3().randomDirection().multiplyScalar(0.1));
+                this.prevPos.copy(this.pos);
+                this.vel.copy(new THREE.Vector3().randomDirection()).multiplyScalar(impulseScale * (0.8 + Math.random() * 0.4));
+                this.lifetime = this.maxLifetime;
+                this.color.copy(FIREWORK_COLORS[Math.floor(Math.random() * FIREWORK_COLORS.length)]);
+                this.updateAttributes();
+            }
+
+            update(damping, attractorPos, currentGravity, isFist) {
+                if (this.lifetime > 0) {
+                    this.lifetime--;
+                    this.prevPos.copy(this.pos);
+
+                    if (isFist && currentGravity > 0) {
+                        const forceDirection = new THREE.Vector3().copy(attractorPos).sub(this.pos);
+                        const distSq = forceDirection.lengthSq();
+                        if (distSq > 0.01) {
+                            const force = currentGravity / distSq;
+                            this.vel.add(forceDirection.normalize().multiplyScalar(force));
+                        }
+                    }
+
+                    this.vel.multiplyScalar(damping);
+                    this.pos.add(this.vel);
+
+                    if (this.pos.length() > BOUNDS) {
+                        if (isFist) this.pos.copy(attractorPos);
+                        else this.resetToCenter();
+                    }
+
+                } else {
+                    this.resetToCenter();
+                }
+                
+                this.updateAttributes();
+            }
+
+            updateAttributes() {
+                const lifeRatio = this.lifetime / this.maxLifetime;
+                
+                positions[this.index * 6 + 0] = this.pos.x;
+                positions[this.index * 6 + 1] = this.pos.y;
+                positions[this.index * 6 + 2] = this.pos.z;
+                
+                positions[this.index * 6 + 3] = this.prevPos.x;
+                positions[this.index * 6 + 4] = this.prevPos.y;
+                positions[this.index * 6 + 5] = this.prevPos.z;
+
+                const headColor = this.color.clone().multiplyScalar(lifeRatio);
+                const tailColor = headColor.clone().multiplyScalar(0.5); 
+
+                colors[this.index * 6 + 0] = headColor.r;
+                colors[this.index * 6 + 1] = headColor.g;
+                colors[this.index * 6 + 2] = headColor.b;
+                
+                colors[this.index * 6 + 3] = tailColor.r;
+                colors[this.index * 6 + 4] = tailColor.g;
+                colors[this.index * 6 + 5] = tailColor.b;
+            }
+        }
+
+        function initThreeJS() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('threejs-canvas'), antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setClearColor(0x000000);
+            camera.position.z = 10;
+
+            const particleGeometry = new THREE.BufferGeometry();
+            
+            positions = new Float32Array(NUM_PARTICLES * 2 * 3);
+            colors = new Float32Array(NUM_PARTICLES * 2 * 3);
+
+            for (let i = 0; i < NUM_PARTICLES; i++) {
+                const particle = new Particle(i);
+                particle.resetToCenter();
+                particles.push(particle);
+            }
+
+            particleGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            particleGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+            
+            const particleMaterial = new THREE.LineBasicMaterial({
+                vertexColors: true,
+                blending: THREE.AdditiveBlending,
+                transparent: true,
+                depthWrite: false
+            });
+            
+            particleSystem = new THREE.LineSegments(particleGeometry, particleMaterial);
+            scene.add(particleSystem);
+
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        async function createHandLandmarker() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
+                runningMode: "VIDEO",
+                numHands: 1
+            });
+            document.getElementById('loading-message').textContent = "Iniciando cámara...";
+            setupWebcam();
+        }
+
+        async function setupWebcam() {
+            video = document.getElementById("webcam");
+            try {
+                // --- CAMBIO: Pedir una resolución de video más baja ---
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { 
+                        width: 640, 
+                        height: 480 
+                    } 
+                });
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", () => {
+                    document.getElementById('loading-message').style.display = 'none';
+                    animate();
+                });
+            } catch (error) {
+                console.error("Error al acceder a la cámara:", error);
+                document.getElementById('loading-message').textContent = "Error: No se pudo acceder a la cámara.";
+            }
+        }
+        
+        function mapTo3DWorld(point) {
+            const vec = new THREE.Vector3();
+            vec.x = (1.0 - point.x - 0.5) * 15;
+            vec.y = -(point.y - 0.5) * 12;
+            vec.z = (point.z * -1) * 30;
+            return vec;
+        }
+
+        function detectGesture(landmarks) {
+            const FINGER_TIPS = [4, 8, 12, 16, 20];
+            const palm = landmarks[0];
+            let totalDistance = 0;
+            for (const tipIndex of FINGER_TIPS) {
+                const tip = landmarks[tipIndex];
+                totalDistance += Math.hypot(tip.x - palm.x, tip.y - palm.y, tip.z - palm.z);
+            }
+            return (totalDistance / FINGER_TIPS.length) < GESTURE_THRESHOLD;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (video.readyState === 4 && handLandmarker) {
+                const nowInMs = Date.now();
+                if (lastVideoTime !== video.currentTime) {
+                    lastVideoTime = video.currentTime;
+                    detections = handLandmarker.detectForVideo(video, nowInMs);
+                }
+            }
+            
+            let isHandDetected = false;
+            let damping = NO_HAND_DAMPING;
+            currentGravity = 0.0;
+            let currentIsFist = false;
+
+            if (detections && detections.landmarks && detections.landmarks.length > 0) {
+                isHandDetected = true;
+                const landmarks = detections.landmarks[0];
+                const palmCenter = landmarks[9];
+                attractor.copy(mapTo3DWorld(palmCenter));
+                
+                currentIsFist = detectGesture(landmarks);
+                
+                if (currentIsFist) {
+                    currentGravity = FIST_GRAVITY;
+                    damping = FIST_DAMPING;
+                } else {
+                    currentGravity = PALM_GRAVITY;
+                    damping = PALM_DAMPING;
+                }
+            } else {
+                 damping = NO_HAND_DAMPING;
+            }
+
+            if (wasFist && !currentIsFist && isHandDetected) {
+                // --- CAMBIO: Lógica de explosión usa el cursor ---
+                // Explota 300 partículas a la vez (puedes ajustar este número)
+                for (let i = 0; i < 300; i++) {
+                    const pIndex = (particleCursor + i) % NUM_PARTICLES;
+                    const p = particles[pIndex];
+                    p.startExplosion(attractor, PALM_INITIAL_IMPULSE);
+                }
+                particleCursor = (particleCursor + 300) % NUM_PARTICLES; // Avanza el cursor
+            }
+            wasFist = currentIsFist;
+
+            for (let i = 0; i < NUM_PARTICLES; i++) {
+                particles[i].update(damping, attractor, currentGravity, currentIsFist);
+            }
+
+            particleSystem.geometry.attributes.position.needsUpdate = true;
+            particleSystem.geometry.attributes.color.needsUpdate = true;
+            
+            renderer.render(scene, camera);
+        }
+
+        initThreeJS();
+        createHandLandmarker();
+    </script>
+</body>
+</html>
