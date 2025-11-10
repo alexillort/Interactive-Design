@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Forja Dimensional 3D</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; cursor: pointer; }
+        #container { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; }
+        #input_video { display: none; transform: scaleX(-1); } /* Modo espejo */
+        #info {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: white; font-family: monospace; font-size: 24px;
+            text-shadow: 2px 2px 4px #000; z-index: 100;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">Haz clic para iniciar</div>
+    <video id="input_video" autoplay playsinline></video>
+    <div id="container"></div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.164.1/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.164.1/examples/jsm/"
+        }
+    }
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.7.77/Tone.js"></script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+        let handLandmarker, scene, camera, renderer, composer, videoTexture, backgroundPlane;
+        const video = document.getElementById("input_video");
+        const container = document.getElementById("container");
+        const infoDiv = document.getElementById("info");
+
+        // --- Configuración de Audio (Tone.js) ---
+        let audioInitialized = false;
+        let ambientSynth, filter, shapeShiftSynth;
+
+        function setupWebAudio() {
+            if (audioInitialized) return;
+            Tone.start();
+            
+            // Sonido ambiental controlado por la escala
+            filter = new Tone.AutoFilter("4n").start();
+            ambientSynth = new Tone.FMOscillator({
+                frequency: 80,
+                harmonicity: 1.2,
+                modulationIndex: 5,
+                type: "sine",
+                volume: -20
+            }).connect(filter).toDestination().start();
+            
+            // Sonido para el cambio de forma
+            shapeShiftSynth = new Tone.NoiseSynth({
+                noise: { type: "white" },
+                envelope: { attack: 0.005, decay: 0.1, sustain: 0 }
+            }).toDestination();
+            
+            audioInitialized = true;
+            infoDiv.style.display = 'none';
+        }
+        document.body.addEventListener('click', setupWebAudio, { once: true });
+
+        // --- Configuración de 3D ---
+        let currentShapeMesh;
+        let shapeGeometries = [];
+        let shapeIndex = 0;
+        let targetRotation = new THREE.Euler(0, 0, 0);
+        let targetScale = 0.1;
+        let wasFist = [false, false]; // Estado del puño para cada mano
+        const GESTURE_THRESHOLD = 0.18; // Umbral para detectar puño
+
+        async function setupMediapipe() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
+                runningMode: "VIDEO",
+                numHands: 2
+            });
+            startCamera();
+        }
+
+        function startCamera() {
+            navigator.mediaDevices.getUserMedia({ 
+                video: { width: {ideal: 640}, height: {ideal: 480} } // Resolución optimizada
+            }).then(stream => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", () => {
+                    video.width = video.videoWidth;
+                    video.height = video.videoHeight;
+                    setupThreeJS();
+                    animate();
+                });
+            });
+        }
+
+        function setupThreeJS() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 5; // Más cerca para una cámara de perspectiva
+            renderer = new THREE.WebGLRenderer({ antialias: true, canvas: container.appendChild(document.createElement('canvas')) });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            
+            videoTexture = new THREE.VideoTexture(video);
+            videoTexture.wrapS = THREE.RepeatWrapping;
+            videoTexture.repeat.x = -1; // Modo espejo
+            
+            // Fondo de video oscuro
+            const planeGeo = new THREE.PlaneGeometry(1, 1);
+            const planeMat = new THREE.MeshBasicMaterial({ map: videoTexture, color: 0x333333 }); // Atenuado
+            backgroundPlane = new THREE.Mesh(planeGeo, planeMat);
+            scene.add(backgroundPlane);
+
+            // --- Geometrías para la Forja ---
+            shapeGeometries.push(new THREE.BoxGeometry(2, 2, 2));
+            shapeGeometries.push(new THREE.SphereGeometry(1.2, 32, 16));
+            shapeGeometries.push(new THREE.ConeGeometry(1.2, 2, 4)); // Pirámide (4 lados)
+            shapeGeometries.push(new THREE.DodecahedronGeometry(1.5));
+            
+            // Material de "líneas y distorsiones"
+            const material = new THREE.MeshStandardMaterial({
+                color: 0x00ffff,
+                emissive: 0x00ffff, // Clave para el Bloom
+                wireframe: true,
+                toneMapped: false // Ignora el mapeo de tonos para brillar al máximo
+            });
+
+            currentShapeMesh = new THREE.Mesh(shapeGeometries[0], material);
+            scene.add(currentShapeMesh);
+            
+            // Post-procesado (Bloom)
+            const renderScene = new RenderPass(scene, camera);
+            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+            bloomPass.threshold = 0;
+            bloomPass.strength = 2.0; // Resplandor intenso
+            bloomPass.radius = 0.5;
+            composer = new EffectComposer(renderer);
+            composer.addPass(renderScene);
+            composer.addPass(bloomPass);
+
+            window.addEventListener('resize', onWindowResize);
+            onWindowResize(); // Ajustar el fondo al inicio
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+            
+            if (backgroundPlane) {
+                // Mapeo preciso para el fondo de perspectiva
+                const vFOV = THREE.MathUtils.degToRad(camera.fov);
+                const planeHeight = 2 * Math.tan(vFOV / 2) * Math.abs(camera.position.z - backgroundPlane.position.z);
+                const planeWidth = planeHeight * camera.aspect;
+                backgroundPlane.scale.set(planeWidth, planeHeight, 1);
+            }
+        }
+        
+        // Detección de puño
+        function detectGesture(landmarks) {
+            const FINGER_TIPS = [4, 8, 12, 16, 20];
+            const palm = landmarks[0];
+            let totalDistance = 0;
+            for (const tipIndex of FINGER_TIPS) {
+                totalDistance += Math.hypot(landmarks[tipIndex].x - palm.x, landmarks[tipIndex].y - palm.y);
+            }
+            return (totalDistance / FINGER_TIPS.length) < GESTURE_THRESHOLD;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const results = handLandmarker?.detectForVideo(video, performance.now());
+            
+            let isHand1Detected = false;
+            let isHand2Detected = false;
+
+            if (results?.handedness) {
+                results.handedness.forEach((hand, handIndex) => {
+                    const landmarks = results.landmarks[handIndex];
+                    
+                    // --- MANO IZQUIERDA (Scale) ---
+                    if (hand[0].categoryName === 'Left') {
+                        isHand1Detected = true;
+                        const thumbTip = landmarks[4];
+                        const indexTip = landmarks[8];
+                        const pinchDist = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y);
+                        // Mapea la distancia del pellizco a la escala
+                        targetScale = THREE.MathUtils.mapLinear(pinchDist, 0.02, 0.2, 0.1, 2.5);
+                        targetScale = THREE.MathUtils.clamp(targetScale, 0.1, 2.5);
+                    } 
+                    
+                    // --- MANO DERECHA (Rotate & Shape Shift) ---
+                    else if (hand[0].categoryName === 'Right') {
+                        isHand2Detected = true;
+                        const palm = landmarks[9];
+                        // Mapea la posición de la palma a la rotación
+                        targetRotation.y = THREE.MathUtils.mapLinear(palm.x, 0.2, 0.8, Math.PI, -Math.PI);
+                        targetRotation.x = THREE.MathUtils.mapLinear(palm.y, 0.2, 0.8, Math.PI, -Math.PI);
+
+                        // Gesto de cambio de forma (Puño)
+                        const isFist = detectGesture(landmarks);
+                        if (isFist && !wasFist[handIndex]) { // Si ACABA de cerrar el puño
+                            shapeIndex = (shapeIndex + 1) % shapeGeometries.length;
+                            currentShapeMesh.geometry.dispose(); // Libera la geometría anterior
+                            currentShapeMesh.geometry = shapeGeometries[shapeIndex];
+                            if(audioInitialized) shapeShiftSynth.triggerAttack(); // Sonido de cambio
+                        }
+                        wasFist[handIndex] = isFist;
+                    }
+                });
+            }
+
+            // Actualizar estados si no se detectan manos
+            if (!isHand1Detected) targetScale = 0.1;
+            if (!isHand2Detected) {
+                 targetRotation.y = THREE.MathUtils.lerp(targetRotation.y, 0, 0.05);
+                 targetRotation.x = THREE.MathUtils.lerp(targetRotation.x, 0, 0.05);
+                 wasFist[1] = false; // Asume que la mano 1 es la derecha si solo hay una
+            }
+            if (!results.handedness || results.handedness.length === 0) {
+                wasFist[0] = false;
+                wasFist[1] = false;
+            }
+
+            // --- Actualizar Objeto 3D (con suavizado 'lerp') ---
+            currentShapeMesh.scale.lerp(new THREE.Vector3(targetScale, targetScale, targetScale), 0.1);
+            currentShapeMesh.rotation.x = THREE.MathUtils.lerp(currentShapeMesh.rotation.x, targetRotation.x, 0.1);
+            currentShapeMesh.rotation.y = THREE.MathUtils.lerp(currentShapeMesh.rotation.y, targetRotation.y, 0.1);
+            currentShapeMesh.rotation.z += 0.003; // Rotación constante lenta
+
+            // --- Actualizar Audio ---
+            if (audioInitialized) {
+                if(isHand1Detected || isHand2Detected) {
+                    ambientSynth.volume.rampTo(-20, 0.1); // Sube el volumen del sinte
+                    // El filtro se abre (más brillante) cuanto más grande es la forma
+                    const filterFreq = THREE.MathUtils.mapLinear(targetScale, 0.1, 2.5, 200, 5000);
+                    filter.frequency.rampTo(filterFreq, 0.1);
+                } else {
+                    ambientSynth.volume.rampTo(-Infinity, 0.5); // Silencia el sinte
+                }
+            }
+            
+            composer.render();
+        }
+
+        setupMediapipe();
+    </script>
+</body>
+</html>
