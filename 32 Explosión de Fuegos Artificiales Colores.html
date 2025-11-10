@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8" />
+    <title>Explosión de Fuegos Artificiales con Mano Abierta</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        /* El video está oculto porque usamos las coordenadas; si quieres verlo, cambia display a block. */
+        #webcam { display: none; transform: scaleX(-1); }
+        #threejs-canvas { display: block; width: 100vw; height: 100vh; }
+        #loading-message {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: white; font-family: Arial, sans-serif;
+            font-size: 1.2em; text-align: center;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading-message">Cargando MediaPipe y cámara...</div>
+    <video id="webcam" autoplay playsinline muted></video>
+    <canvas id="threejs-canvas"></canvas>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
+
+    <script type="module">
+    import * as THREE from 'three';
+    import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+    // ---------------------- Config ----------------------
+    const NUM_PARTICLES = 10000;         // tamaño total del pool
+    const PARTICLE_LIFETIME = 180;      // frames
+    const EXPLOSION_IMPULSE = 0.2;
+    const PARTICLE_GRAVITY = 0.005;
+    const DAMPING_FACTOR = 0.97;
+    const GESTURE_THRESHOLD = 0.15;
+    const PARTICLES_PER_EXPLOSION = 250; // número de partículas por explosión (evita reactivar las 10k)
+    const EXPLOSION_COOLDOWN_MS = 500;
+    // Paleta
+    const FIREWORK_COLORS = [
+        new THREE.Color(0xFFFFFF),
+        new THREE.Color(0xFFD700),
+        new THREE.Color(0xFF4500),
+        new THREE.Color(0xDC143C)
+    ];
+
+    // ---------------------- Estado global ----------------------
+    let scene, camera, renderer, particleSystem;
+    let positions, colors;
+    const particleVelocities = new Array(NUM_PARTICLES);
+    const particleLifetimes = new Float32Array(NUM_PARTICLES);
+    const particleInitialColors = new Array(NUM_PARTICLES);
+    let particleCursor = 0;
+    let handLandmarker = null;
+    let video = null;
+    let lastVideoTime = -1;
+    let detections = null;
+    const handPosition = new THREE.Vector3();
+    let wasHandOpen = false;
+    let lastExplosionTime = 0;
+
+    // ---------------------- Utilidades ----------------------
+    function createParticleSprite() {
+        const canvas = document.createElement('canvas');
+        canvas.width = 32; canvas.height = 32;
+        const ctx = canvas.getContext('2d');
+        const g = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+        g.addColorStop(0, 'rgba(255,255,255,1)');
+        g.addColorStop(0.2, 'rgba(255,255,255,0.9)');
+        g.addColorStop(0.6, 'rgba(255,255,255,0.3)');
+        g.addColorStop(1, 'rgba(255,255,255,0)');
+        ctx.fillStyle = g;
+        ctx.fillRect(0,0,32,32);
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.minFilter = THREE.LinearFilter;
+        tex.needsUpdate = true;
+        return tex;
+    }
+
+    // ---------------------- Three.js init ----------------------
+    function initThreeJS() {
+        scene = new THREE.Scene();
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
+        camera.position.z = 10;
+
+        renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('threejs-canvas'), antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setClearColor(0x000000);
+
+        const geometry = new THREE.BufferGeometry();
+        positions = new Float32Array(NUM_PARTICLES * 3);
+        colors = new Float32Array(NUM_PARTICLES * 3);
+
+        for (let i = 0; i < NUM_PARTICLES; i++) {
+            // Partículas "muertas" fuera de vista
+            positions[i*3] = 0;
+            positions[i*3 + 1] = 0;
+            positions[i*3 + 2] = -1000;
+            colors[i*3] = 0;
+            colors[i*3 + 1] = 0;
+            colors[i*3 + 2] = 0;
+
+            particleVelocities[i] = new THREE.Vector3();
+            particleLifetimes[i] = 0;
+            particleInitialColors[i] = new THREE.Color(0x000000);
+        }
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+        const material = new THREE.PointsMaterial({
+            vertexColors: true,
+            size: 0.25,
+            map: createParticleSprite(),
+            blending: THREE.AdditiveBlending,
+            transparent: true,
+            depthWrite: false,
+            sizeAttenuation: true
+        });
+
+        particleSystem = new THREE.Points(geometry, material);
+        scene.add(particleSystem);
+
+        window.addEventListener('resize', onWindowResize);
+    }
+
+    function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    // Mapea coordenadas de mediapipe (0..1) a espacio 3D (ajusta escala a tu gusto)
+    function mapTo3DWorld(point) {
+        const vec = new THREE.Vector3();
+        // Invertimos X porque el video está volteado visualmente
+        vec.x = (1.0 - point.x - 0.5) * 15;
+        vec.y = -(point.y - 0.5) * 12;
+        vec.z = (point.z * -1) * 30;
+        return vec;
+    }
+
+    // Detecta mano abierta con base en la distancia promedio de las yemas a la base de la palma
+    function detectHandOpen(landmarks) {
+        const FINGER_TIPS = [4, 8, 12, 16, 20];
+        const palmBase = landmarks[0];
+        let totalDistance = 0;
+        for (const tipIndex of FINGER_TIPS) {
+            const tip = landmarks[tipIndex];
+            totalDistance += Math.hypot(tip.x - palmBase.x, tip.y - palmBase.y, tip.z - palmBase.z);
+        }
+        const averageDistance = totalDistance / FINGER_TIPS.length;
+        return averageDistance > GESTURE_THRESHOLD;
+    }
+
+    // ---------------------- MediaPipe HandLandmarker ----------------------
+    async function createHandLandmarker() {
+        try {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
+                runningMode: "VIDEO",
+                numHands: 1
+            });
+            document.getElementById('loading-message').textContent = "Iniciando cámara...";
+            await setupWebcam();
+        } catch (err) {
+            console.error("Error al crear HandLandmarker:", err);
+            document.getElementById('loading-message').textContent = "Error cargando modelo MediaPipe.";
+        }
+    }
+
+    async function setupWebcam() {
+        video = document.getElementById("webcam");
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
+            video.srcObject = stream;
+            // for some browsers you may need to await play
+            await video.play();
+            video.addEventListener("loadeddata", () => {
+                document.getElementById('loading-message').style.display = 'none';
+            });
+        } catch (error) {
+            console.error("Error al acceder a la cámara:", error);
+            document.getElementById('loading-message').textContent = "Error: No se pudo acceder a la cámara.";
+        }
+    }
+
+    // ---------------------- Generador de explosiones (uso de pool) ----------------------
+    // ---------------------- Generador de explosiones (uso de pool) ----------------------
+    function spawnExplosionAt(positionWorld) {
+        // 🎨 Paletas de colores monocromáticas (cada una es una gama)
+        const COLOR_PALETTES = [
+            // Azul
+            [new THREE.Color(0x66ccff), new THREE.Color(0x3399ff), new THREE.Color(0x0033cc)],
+            // Rosado
+            [new THREE.Color(0xff99cc), new THREE.Color(0xff66b2), new THREE.Color(0xcc3377)],
+            // Verde
+            [new THREE.Color(0x99ff99), new THREE.Color(0x66ff66), new THREE.Color(0x33cc33)],
+            // Naranja
+            [new THREE.Color(0xffcc66), new THREE.Color(0xff9933), new THREE.Color(0xcc6600)],
+            // Violeta / Morado
+            [new THREE.Color(0xcc99ff), new THREE.Color(0x9966ff), new THREE.Color(0x6633cc)],
+            // Blanco / Plateado
+            [new THREE.Color(0xffffff), new THREE.Color(0xdddddd), new THREE.Color(0xaaaaaa)],
+            // Amarillo
+            [new THREE.Color(0xffff99), new THREE.Color(0xffff33), new THREE.Color(0xffcc00)],
+            // Rojo
+            [new THREE.Color(0xff9999), new THREE.Color(0xff3333), new THREE.Color(0xcc0000)],
+            // Cian / Turquesa
+            [new THREE.Color(0x99ffff), new THREE.Color(0x33ffff), new THREE.Color(0x00cccc)],
+            // Magenta / Fucsia
+            [new THREE.Color(0xff99ff), new THREE.Color(0xff33ff), new THREE.Color(0xcc00cc)]
+        ];
+
+        // Elegir una paleta aleatoria para esta explosión
+        const palette = COLOR_PALETTES[Math.floor(Math.random() * COLOR_PALETTES.length)];
+
+        // spawnear un lote de partículas (PARTICLES_PER_EXPLOSION)
+        for (let k = 0; k < PARTICLES_PER_EXPLOSION; k++) {
+            const pIndex = particleCursor;
+
+            // posición inicial
+            positions[pIndex*3] = positionWorld.x;
+            positions[pIndex*3 + 1] = positionWorld.y;
+            positions[pIndex*3 + 2] = positionWorld.z;
+
+            // impulso aleatorio
+            const impulse = new THREE.Vector3().randomDirection().multiplyScalar(EXPLOSION_IMPULSE * (0.6 + Math.random() * 0.8));
+            impulse.y += 0.02 + Math.random() * 0.08;
+            particleVelocities[pIndex].copy(impulse);
+
+            // vida y color inicial (color aleatorio dentro de la paleta elegida)
+            particleLifetimes[pIndex] = PARTICLE_LIFETIME * (0.6 + Math.random() * 0.4);
+            const c = palette[Math.floor(Math.random() * palette.length)];
+            particleInitialColors[pIndex].copy(c);
+            c.toArray(colors, pIndex*3);
+
+            // avanzar cursor circular
+            particleCursor = (particleCursor + 1) % NUM_PARTICLES;
+        }
+    }
+
+
+    // ---------------------- Loop principal ----------------------
+    function animate() {
+        requestAnimationFrame(animate);
+
+        // Detección (solo si el video y el modelo están listos)
+        if (video && video.readyState >= 2 && handLandmarker) {
+            const nowInMs = Date.now();
+            // evitar llamar detectForVideo si el frame no cambió (algo de protección)
+            if (lastVideoTime !== video.currentTime) {
+                lastVideoTime = video.currentTime;
+                try {
+                    // detectForVideo retorna un objeto con "landmarks" (según la versión)
+                    detections = handLandmarker.detectForVideo(video, nowInMs);
+                } catch (err) {
+                    console.warn("detectForVideo falló:", err);
+                }
+            }
+        }
+
+        let currentHandOpen = false;
+
+        if (detections && detections.landmarks && detections.landmarks.length > 0) {
+            const landmarks = detections.landmarks[0];
+            const palmCenter = landmarks[9] ?? landmarks[0]; // fallback
+            // mapeo a mundo 3D
+            const mapped = mapTo3DWorld(palmCenter);
+            handPosition.copy(mapped);
+            currentHandOpen = detectHandOpen(landmarks);
+
+            // detectar transición de cerrado -> abierto con cooldown
+            if (!wasHandOpen && currentHandOpen && (performance.now() - lastExplosionTime > EXPLOSION_COOLDOWN_MS)) {
+                spawnExplosionAt(handPosition);
+                lastExplosionTime = performance.now();
+            }
+        }
+
+        wasHandOpen = currentHandOpen;
+
+        // Actualizar física de partículas (solo atributos activos)
+        let posAttr = particleSystem.geometry.attributes.position.array;
+        let colAttr = particleSystem.geometry.attributes.color.array;
+
+        for (let i = 0; i < NUM_PARTICLES; i++) {
+            if (particleLifetimes[i] > 0) {
+                particleLifetimes[i]--;
+                // física
+                particleVelocities[i].y -= PARTICLE_GRAVITY;
+                particleVelocities[i].multiplyScalar(DAMPING_FACTOR);
+                positions[i*3] += particleVelocities[i].x;
+                positions[i*3 + 1] += particleVelocities[i].y;
+                positions[i*3 + 2] += particleVelocities[i].z;
+
+                const lifeRatio = particleLifetimes[i] / PARTICLE_LIFETIME;
+                // desvanecer color multiplicando por lifeRatio
+                const tc = particleInitialColors[i];
+                colAttr[i*3] = tc.r * lifeRatio;
+                colAttr[i*3 + 1] = tc.g * lifeRatio;
+                colAttr[i*3 + 2] = tc.b * lifeRatio;
+            } else {
+                // particula muerta -> fuera de vista (opcional)
+                positions[i*3 + 2] = -1000;
+                colAttr[i*3] = 0;
+                colAttr[i*3 + 1] = 0;
+                colAttr[i*3 + 2] = 0;
+            }
+        }
+
+        // marcar updates una sola vez
+        particleSystem.geometry.attributes.position.needsUpdate = true;
+        particleSystem.geometry.attributes.color.needsUpdate = true;
+
+        renderer.render(scene, camera);
+    }
+
+    // ---------------------- Inicio ----------------------
+    initThreeJS();
+    createHandLandmarker().then(() => {
+        // Si la cámara ya está lista, ocultamos el mensaje y arrancamos la animación.
+        const loading = document.getElementById('loading-message');
+        if (loading) loading.style.display = 'none';
+        animate();
+    }).catch(err => {
+        console.error("Error init:", err);
+        const loading = document.getElementById('loading-message');
+        if (loading) loading.textContent = "Error inicializando la aplicación.";
+    });
+    </script>
+</body>
+</html>
