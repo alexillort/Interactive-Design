@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Nebulosa de Atracción y Repulsión v2</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; cursor: pointer; }
+        #container { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; }
+        #input_video { display: none; transform: scaleX(-1); }
+        #info {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: white; font-family: monospace; font-size: 24px;
+            text-shadow: 2px 2px 4px #000; z-index: 100;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">Haz clic para iniciar</div>
+    <video id="input_video" autoplay playsinline></video>
+    <div id="container"></div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.164.1/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.164.1/examples/jsm/"
+        }
+    }
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.7.77/Tone.js"></script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+        let handLandmarker, scene, camera, renderer, composer;
+        const video = document.getElementById("input_video");
+        const container = document.getElementById("container");
+        const infoDiv = document.getElementById("info");
+
+        // --- Configuración de Audio (Tone.js) ---
+        let audioInitialized = false;
+        let windSynth, blastSynth;
+
+        function setupWebAudio() {
+            if (audioInitialized) return;
+            Tone.start();
+            
+            windSynth = new Tone.NoiseSynth({
+                noise: { type: "pink" },
+                envelope: { attack: 0.1, decay: 0.2, sustain: 1 },
+                volume: -Infinity
+            }).toDestination();
+            
+            blastSynth = new Tone.MembraneSynth({
+                pitchDecay: 0.05,
+                octaves: 2,
+                envelope: { attack: 0.001, decay: 0.3, sustain: 0 },
+                volume: -5
+            }).toDestination();
+            
+            audioInitialized = true;
+            infoDiv.style.display = 'none';
+        }
+        document.body.addEventListener('click', setupWebAudio, { once: true });
+
+        // --- Configuración de 3D ---
+        const GESTURE_THRESHOLD = 0.18;
+        const NUM_PARTICLES = 50000;
+        const FIELD_RADIUS = 30;
+        
+        const ATTRACTION_FORCE = 25.0;
+        const REPEL_FORCE = 60.0;
+        const PARTICLE_DAMPING = 0.96;
+        const BOUNCE_DAMPING = -0.5;
+
+        const BLOOM_MAX_STRENGTH = 3.0;
+        const BLOOM_MIN_STRENGTH = 0.5;
+        const BLOOM_LERP_FACTOR = 0.1;
+        
+        // --- (NUEVO) Configuración de Tamaño de Partícula ---
+        const PARTICLE_SIZE_MIN = 0.05; // Tamaño normal (atraídas)
+        const PARTICLE_SIZE_MAX = 0.15; // Tamaño en explosión (repelidas)
+
+        let particleSystem;
+        let particles = [];
+        let wasFist = [false, false];
+        let currentBloomStrength = BLOOM_MIN_STRENGTH;
+        
+        let worldBounds = new THREE.Box3();
+        const tempForce = new THREE.Vector3();
+        const tempVel = new THREE.Vector3();
+
+        class Particle {
+            constructor(index, basePos) {
+                this.index = index;
+                this.pos = basePos.clone();
+                this.vel = new THREE.Vector3();
+            }
+            
+            update(damping, handPositions, fistStates, deltaTime) {
+                tempForce.set(0, 0, 0);
+                
+                handPositions.forEach((handPos, handIndex) => {
+                    if (handPos) {
+                        const dist = this.pos.distanceTo(handPos);
+                        if (dist < FIELD_RADIUS) {
+                            if (fistStates[handIndex]) {
+                                const force = tempVel.copy(handPos).sub(this.pos).normalize();
+                                force.multiplyScalar(ATTRACTION_FORCE * (1 - dist / FIELD_RADIUS));
+                                tempForce.add(force);
+                            } else {
+                                const force = tempVel.copy(this.pos).sub(handPos).normalize();
+                                force.multiplyScalar(REPEL_FORCE / (dist + 0.1));
+                                tempForce.add(force);
+                            }
+                        }
+                    }
+                });
+
+                this.vel.add(tempForce.multiplyScalar(deltaTime));
+                this.vel.multiplyScalar(damping);
+                this.pos.add(tempVel.copy(this.vel).multiplyScalar(deltaTime));
+
+                if (this.pos.x < worldBounds.min.x || this.pos.x > worldBounds.max.x) {
+                    this.pos.x = THREE.MathUtils.clamp(this.pos.x, worldBounds.min.x, worldBounds.max.x);
+                    this.vel.x *= BOUNCE_DAMPING;
+                }
+                if (this.pos.y < worldBounds.min.y || this.pos.y > worldBounds.max.y) {
+                    this.pos.y = THREE.MathUtils.clamp(this.pos.y, worldBounds.min.y, worldBounds.max.y);
+                    this.vel.y *= BOUNCE_DAMPING;
+                }
+                if (this.pos.z < worldBounds.min.z || this.pos.z > worldBounds.max.z) {
+                    this.pos.z = THREE.MathUtils.clamp(this.pos.z, worldBounds.min.z, worldBounds.max.z);
+                    this.vel.z *= BOUNCE_DAMPING;
+                }
+            }
+        }
+
+        async function setupMediapipe() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
+                runningMode: "VIDEO", numHands: 2
+            });
+            startCamera();
+        }
+
+        function startCamera() {
+            navigator.mediaDevices.getUserMedia({ 
+                video: { width: {ideal: 640}, height: {ideal: 480} } 
+            }).then(stream => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", () => {
+                    video.width = video.videoWidth;
+                    video.height = video.videoHeight;
+                    setupThreeJS();
+                    animate();
+                });
+            });
+        }
+
+        function createParticleTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 64; canvas.height = 64;
+            const context = canvas.getContext('2d');
+            const gradient = context.createRadialGradient(32, 32, 0, 32, 32, 32);
+            gradient.addColorStop(0, 'rgba(255,255,255,1)');
+            gradient.addColorStop(0.2, 'rgba(255,255,255,1)');
+            gradient.addColorStop(0.8, 'rgba(255,255,255,0)');
+            gradient.addColorStop(1, 'rgba(255,255,255,0)');
+            context.fillStyle = gradient;
+            context.fillRect(0, 0, 64, 64);
+            return new THREE.CanvasTexture(canvas);
+        }
+
+        function setupThreeJS() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 25;
+            renderer = new THREE.WebGLRenderer({ antialias: true, canvas: container.appendChild(document.createElement('canvas')) });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+            
+            const videoTexture = new THREE.VideoTexture(video);
+            videoTexture.wrapS = THREE.RepeatWrapping;
+            videoTexture.repeat.x = -1; 
+            const planeGeo = new THREE.PlaneGeometry(1, 1);
+            const planeMat = new THREE.MeshBasicMaterial({ map: videoTexture, color: 0x333333 });
+            const backgroundPlane = new THREE.Mesh(planeGeo, planeMat);
+            scene.add(backgroundPlane);
+
+            const geometry = new THREE.BufferGeometry();
+            const positions = new Float32Array(NUM_PARTICLES * 3);
+            const colors = new Float32Array(NUM_PARTICLES * 3);
+
+            for (let i = 0; i < NUM_PARTICLES; i++) {
+                const theta = Math.random() * 2 * Math.PI;
+                const phi = Math.acos(2 * Math.random() - 1);
+                const r = FIELD_RADIUS * Math.pow(Math.random(), 1/3);
+                const x = r * Math.sin(phi) * Math.cos(theta);
+                const y = r * Math.sin(phi) * Math.sin(theta);
+                const z = r * Math.cos(phi);
+                positions[i * 3] = x;
+                positions[i * 3 + 1] = y;
+                positions[i * 3 + 2] = z;
+                particles.push(new Particle(i, new THREE.Vector3(x, y, z)));
+                const color = new THREE.Color();
+                color.setHSL(0.5 + Math.random() * 0.2, 1.0, 0.5 + Math.random() * 0.3);
+                color.toArray(colors, i * 3);
+            }
+
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+            const particleTexture = createParticleTexture();
+            const material = new THREE.PointsMaterial({
+                // --- (MODIFICADO) Usar el tamaño mínimo al inicio ---
+                size: PARTICLE_SIZE_MIN, 
+                vertexColors: true,
+                blending: THREE.AdditiveBlending,
+                transparent: true,
+                depthWrite: false,
+                sizeAttenuation: true,
+                map: particleTexture
+            });
+            particleSystem = new THREE.Points(geometry, material);
+            scene.add(particleSystem);
+
+            const renderScene = new RenderPass(scene, camera);
+            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+            bloomPass.threshold = 0;
+            bloomPass.strength = currentBloomStrength;
+            bloomPass.radius = 0.8;
+            composer = new EffectComposer(renderer);
+            composer.addPass(renderScene);
+            composer.addPass(bloomPass);
+
+            window.addEventListener('resize', onWindowResize);
+            onWindowResize(); 
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+
+            const vFOV = THREE.MathUtils.degToRad(camera.fov);
+            const height = 2 * Math.tan(vFOV / 2) * Math.abs(camera.position.z);
+            const width = height * camera.aspect;
+            worldBounds.set(
+                new THREE.Vector3(-width / 2, -height / 2, -FIELD_RADIUS),
+                new THREE.Vector3(width / 2, height / 2, FIELD_RADIUS)
+            );
+            
+            const backgroundPlane = scene.children[0];
+            backgroundPlane.scale.set(width, height, 1);
+        }
+        
+        function mapTo3DWorld(point) {
+            const z = (point.z * -1) * 30;
+            const vFOV = THREE.MathUtils.degToRad(camera.fov);
+            const height = 2 * Math.tan(vFOV / 2) * Math.abs(camera.position.z - z);
+            const width = height * camera.aspect;
+            const vec = new THREE.Vector3();
+            vec.x = (1.0 - point.x - 0.5) * width; 
+            vec.y = -(point.y - 0.5) * height;
+            vec.z = z; 
+            return vec;
+        }
+
+        function detectGesture(landmarks) {
+            const palm = landmarks[0];
+            let totalDistance = 0;
+            const FINGER_TIPS = [4, 8, 12, 16, 20];
+            for (const tipIndex of FINGER_TIPS) {
+                totalDistance += Math.hypot(
+                    landmarks[tipIndex].x - palm.x, 
+                    landmarks[tipIndex].y - palm.y, 
+                    landmarks[tipIndex].z - palm.z
+                );
+            }
+            return (totalDistance / FINGER_TIPS.length) < GESTURE_THRESHOLD;
+        }
+
+        const clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const deltaTime = clock.getDelta();
+            const results = handLandmarker?.detectForVideo(video, performance.now());
+            
+            let handPositions = [null, null];
+            let fistStates = [false, false];
+            let handsDetected = 0;
+            let targetBloomStrength = BLOOM_MIN_STRENGTH;
+
+            if (results?.handedness) {
+                results.handedness.forEach((hand, handIndex) => {
+                    handsDetected++;
+                    const landmarks = results.landmarks[handIndex];
+                    const palmWorldPos = mapTo3DWorld(landmarks[9]);
+                    handPositions[handIndex] = palmWorldPos;
+                    const isFist = detectGesture(landmarks);
+                    fistStates[handIndex] = isFist;
+
+                    if (!isFist && wasFist[handIndex]) {
+                        if(audioInitialized) blastSynth.triggerAttackRelease("C2", "0.2");
+                        targetBloomStrength = BLOOM_MAX_STRENGTH;
+                    }
+                    wasFist[handIndex] = isFist;
+                });
+            }
+            if(handsDetected === 0) wasFist = [false, false];
+
+            const positions = particleSystem.geometry.attributes.position.array;
+            for (let i = 0; i < NUM_PARTICLES; i++) {
+                particles[i].update(PARTICLE_DAMPING, handPositions, fistStates, deltaTime);
+                particles[i].pos.toArray(positions, i * 3);
+            }
+            particleSystem.geometry.attributes.position.needsUpdate = true;
+
+            // --- Suavizar la transición del Bloom ---
+            currentBloomStrength = THREE.MathUtils.lerp(currentBloomStrength, targetBloomStrength, BLOOM_LERP_FACTOR);
+            composer.passes[1].strength = currentBloomStrength;
+
+            // --- (NUEVO) Suavizar la transición del TAMAÑO de partícula ---
+            // Mapear el rango de bloom (0.5 a 3.0) al rango de tamaño (0.05 a 0.15)
+            const bloomRange = BLOOM_MAX_STRENGTH - BLOOM_MIN_STRENGTH;
+            const sizeRange = PARTICLE_SIZE_MAX - PARTICLE_SIZE_MIN;
+            // Normalizar el valor actual del bloom (de 0 a 1)
+            const normalizedBloom = (currentBloomStrength - BLOOM_MIN_STRENGTH) / bloomRange;
+            // Calcular el tamaño actual
+            const currentParticleSize = PARTICLE_SIZE_MIN + (normalizedBloom * sizeRange);
+            
+            particleSystem.material.size = currentParticleSize; // ¡Actualizar el tamaño!
+
+            // --- Actualizar Audio ---
+            if (audioInitialized) {
+                let anyFistClosed = fistStates.some(state => state === true);
+                if (anyFistClosed) {
+                    windSynth.volume.rampTo(-20, 0.1);
+                } else {
+                    windSynth.volume.rampTo(-Infinity, 0.5);
+                }
+            }
+            
+            composer.render();
+        }
+
+        setupMediapipe();
+    </script>
+</body>
+</html>
