@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Filamentos de Energía Psíquica</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        #container { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; }
+        #input_video { display: none; }
+    </style>
+</head>
+<body>
+    <video id="input_video" autoplay playsinline></video>
+    <div id="container"></div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.164.1/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.164.1/examples/jsm/"
+        }
+    }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+        let handLandmarker, scene, camera, renderer, composer, videoTexture, backgroundPlane;
+        const video = document.getElementById("input_video");
+        const container = document.getElementById("container");
+
+        const NUM_HANDS = 2;
+        const NUM_LANDMARKS = 21;
+        const TENTACLE_LENGTH = 20; // 20 puntos por filamento
+        const DAMPING = 0.75; // Fricción
+        const DRAG = 0.98; // Arrastre general
+        const GRAVITY = 0.1; // Gravedad suave hacia abajo
+        
+        let allTendrils = []; // Almacenará todos los filamentos
+        let handVelocity = [new THREE.Vector3(), new THREE.Vector3()]; // Velocidad de cada mano
+        let lastHandPos = [new THREE.Vector3(), new THREE.Vector3()];
+
+        // Clase para un filamento
+        class Tendril {
+            constructor() {
+                this.points = [];
+                for (let i = 0; i < TENTACLE_LENGTH; i++) {
+                    this.points.push(new THREE.Vector3());
+                }
+                
+                const positions = new Float32Array(TENTACLE_LENGTH * 3);
+                const colors = new Float32Array(TENTACLE_LENGTH * 3);
+                const geometry = new THREE.BufferGeometry();
+                geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+                geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+                // Usamos un material que permita que cada punto de la línea tenga un color diferente
+                const material = new THREE.LineBasicMaterial({ vertexColors: true, blending: THREE.AdditiveBlending });
+                this.lineMesh = new THREE.Line(geometry, material);
+                this.lineMesh.visible = false;
+                scene.add(this.lineMesh);
+            }
+
+            update(targetPos, velocity, baseColor) {
+                this.lineMesh.visible = true;
+
+                // 1. El primer punto (la base) se fija a la mano
+                this.points[0].copy(targetPos);
+                
+                // 2. Física Verlet simple (cada punto sigue al anterior)
+                for (let i = 1; i < TENTACLE_LENGTH; i++) {
+                    let p = this.points[i];
+                    let prevP = this.points[i - 1];
+                    
+                    p.x += (prevP.x - p.x) * DAMPING;
+                    p.y += (prevP.y - p.y) * DAMPING;
+                    p.z += (prevP.z - p.z) * DAMPING;
+
+                    // Simular viento/arrastre y gravedad
+                    p.x *= DRAG;
+                    p.y *= DRAG;
+                    p.z *= DRAG;
+                    p.y -= GRAVITY; // Cae lentamente
+                    
+                    // El movimiento de la mano "empuja" los filamentos
+                    p.add(velocity.clone().multiplyScalar(0.05));
+                }
+
+                // 3. Actualizar la geometría de la línea
+                const positions = this.lineMesh.geometry.attributes.position.array;
+                const colors = this.lineMesh.geometry.attributes.color.array;
+                
+                for (let i = 0; i < TENTACLE_LENGTH; i++) {
+                    const p = this.points[i];
+                    positions[i * 3] = p.x;
+                    positions[i * 3 + 1] = p.y;
+                    positions[i * 3 + 2] = p.z;
+                    
+                    // El color se desvanece a lo largo del filamento
+                    const lifeRatio = 1 - (i / TENTACLE_LENGTH);
+                    const color = baseColor.clone().multiplyScalar(lifeRatio * lifeRatio); // Desvanecimiento cuadrático
+                    colors[i * 3] = color.r;
+                    colors[i * 3 + 1] = color.g;
+                    colors[i * 3 + 2] = color.b;
+                }
+                this.lineMesh.geometry.attributes.position.needsUpdate = true;
+                this.lineMesh.geometry.attributes.color.needsUpdate = true;
+            }
+        }
+
+
+        async function setupMediapipe() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
+                runningMode: "VIDEO",
+                numHands: NUM_HANDS
+            });
+            startCamera();
+        }
+
+        function startCamera() {
+            navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } }).then(stream => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", () => {
+                    video.width = video.videoWidth;
+                    video.height = video.videoHeight;
+                    // --- LLAMAR A INITTHREEJS AQUÍ, ASEGURA QUE EL VIDEO ESTÉ LISTO ---
+                    setupThreeJS();
+                    animate();
+                });
+            });
+        }
+
+        function setupThreeJS() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 100;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, canvas: container.appendChild(document.createElement('canvas')) });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            
+            // --- VIDEO COMO FONDO (CON CORRECCIÓN DE ERROR DE TIEMPO) ---
+            videoTexture = new THREE.VideoTexture(video);
+            videoTexture.minFilter = THREE.LinearFilter;
+            videoTexture.magFilter = THREE.LinearFilter;
+            videoTexture.wrapS = THREE.RepeatWrapping;
+            videoTexture.repeat.x = -1; // Modo espejo
+            
+            // Plano de fondo para el video
+            const planeGeo = new THREE.PlaneGeometry(1, 1);
+            const planeMat = new THREE.MeshBasicMaterial({ map: videoTexture, color: 0x888888 }); // Oscurece el video
+            backgroundPlane = new THREE.Mesh(planeGeo, planeMat);
+            scene.add(backgroundPlane);
+
+            // Crear todos los filamentos (2 manos * 21 puntos)
+            for (let i = 0; i < NUM_HANDS * NUM_LANDMARKS; i++) {
+                allTendrils.push(new Tendril());
+            }
+            
+            // Post-procesado para el efecto Bloom
+            const renderScene = new RenderPass(scene, camera);
+            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.5, 0.85); // Bloom intenso
+            composer = new EffectComposer(renderer);
+            composer.addPass(renderScene);
+            composer.addPass(bloomPass);
+
+            window.addEventListener('resize', onWindowResize);
+            onWindowResize(); // Llamar una vez para ajustar el fondo
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+            
+            // --- AJUSTE DE FONDO CON CÁMARA PERSPECTIVA (CORRECTO) ---
+            if (backgroundPlane) {
+                const vFOV = THREE.MathUtils.degToRad(camera.fov);
+                const planeHeight = 2 * Math.tan(vFOV / 2) * Math.abs(camera.position.z);
+                const planeWidth = planeHeight * camera.aspect;
+                backgroundPlane.scale.set(planeWidth, planeHeight, 1);
+            }
+        }
+        
+        // --- FUNCIÓN DE MAPEO PRECISO ---
+        function mapTo3DWorld(point) {
+            const z = 0; // Trabajamos en el plano Z=0
+            const vFOV = THREE.MathUtils.degToRad(camera.fov);
+            const height = 2 * Math.tan(vFOV / 2) * Math.abs(camera.position.z - z);
+            const width = height * camera.aspect;
+            
+            const vec = new THREE.Vector3();
+            // Mapeo corregido (1.0 - x para el espejo)
+            vec.x = (1.0 - point.x - 0.5) * width;
+            vec.y = -(point.y - 0.5) * height;
+            vec.z = z;
+            return vec;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const results = handLandmarker?.detectForVideo(video, performance.now());
+            
+            // Ocultar todos los filamentos al inicio de cada frame
+            allTendrils.forEach(t => t.lineMesh.visible = false);
+
+            if (results?.landmarks) {
+                results.landmarks.forEach((landmarks, handIndex) => {
+                    
+                    // Calcular velocidad de la mano (basado en la muñeca)
+                    const wristPos = mapTo3DWorld(landmarks[0]);
+                    handVelocity[handIndex].subVectors(wristPos, lastHandPos[handIndex]);
+                    const speed = handVelocity[handIndex].length();
+                    lastHandPos[handIndex].copy(wristPos);
+                    
+                    // El color cambia con la velocidad (Azul/Violeta -> Rojo/Amarillo)
+                    // Hue: 0.7 (violeta) para velocidad 0 -> 0.0 (rojo) para velocidad alta
+                    const colorHue = 0.7 - Math.min(speed * 0.1, 0.7);
+                    const baseColor = new THREE.Color().setHSL(colorHue, 1.0, 0.7);
+                    
+                    landmarks.forEach((landmark, landmarkIndex) => {
+                        const tendrilIndex = handIndex * NUM_LANDMARKS + landmarkIndex;
+                        const targetPos = mapTo3DWorld(landmark);
+                        allTendrils[tendrilIndex].update(targetPos, handVelocity[handIndex], baseColor);
+                    });
+                });
+            }
+
+            composer.render();
+        }
+
+        setupMediapipe();
+    </script>
+</body>
+</html>
